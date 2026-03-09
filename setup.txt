@@ -1,0 +1,43 @@
+We need server, redis and postgress running
+
+
+We will host only postgress online, we can have server and redis running locally
+
+Steps to run locally:
+1. Ensure postgress url is updated in .env
+2. npm i
+3. npm run dev
+
+
+If you need to run postgress on docker locally
+
+docker run --name nodi-postgres \
+  -e POSTGRES_USER=nodi \
+  -e POSTGRES_PASSWORD=nodi123 \
+  -e POSTGRES_DB=nodi \
+  -p 5432:5432 \
+  -v nodi_pgdata:/var/lib/postgresql/data \
+  -d postgres:15-alpine
+
+# Generate Prisma Client
+npx prisma generate
+
+# Create and apply migration
+npx prisma migrate dev --name init
+
+# Open Prisma Studio to verify tables
+npx prisma studio   
+
+
+The DATABASE_URL for above condition will be "postgresql://nodi:nodi123@localhost:5432/nodi?schema=public"
+
+For redis download:
+(windows) https://redis.io/docs/latest/operate/oss_and_stack/install/archive/install-redis/install-redis-on-windows/
+(MAC) brew install redis
+
+Why local server?
+No logging system present right now, difficult for debugging,
+
+
+
+Once server deployed, change url in .env

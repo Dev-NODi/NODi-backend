@@ -1,0 +1,197 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+// generator client {
+//  provider = "prisma-client-js"
+//}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// COMPANIES
+// ═══════════════════════════════════════════════════════════════════════════
+model Company {
+  id   Int    @id @default(autoincrement())
+  name String
+
+  // Motive integration
+  motiveCompanyId         Int?      @unique @map("motive_company_id")
+  motiveOauthToken        String?   @map("motive_oauth_token") @db.Text
+  motiveOauthRefreshToken String?   @map("motive_oauth_refresh_token") @db.Text
+  motiveTokenExpiresAt    DateTime? @map("motive_token_expires_at")
+
+  // Webhook
+  webhookSecret String? @map("webhook_secret")
+
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  drivers  DriverCompanyAssignment[]
+  sessions DrivingSession[]
+
+  @@map("companies")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// DRIVERS
+// ═══════════════════════════════════════════════════════════════════════════
+model Driver {
+  id    Int     @id @default(autoincrement())
+  phone String  @unique
+  email String?
+  name  String?
+
+  motiveDriverId Int? @map("motive_driver_id")
+
+  // Device info
+  deviceId           String?   @map("device_id")
+  devicePlatform     String?   @map("device_platform")
+  fcmToken           String?   @map("fcm_token") @db.Text
+  fcmTokenUpdatedAt  DateTime? @map("fcm_token_updated_at")
+
+  isActive   Boolean   @default(true) @map("is_active")
+  lastSeenAt DateTime? @map("last_seen_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+
+  // Relations
+  companies DriverCompanyAssignment[]
+  sessions  DrivingSession[]
+
+  @@index([phone])
+  @@index([motiveDriverId])
+  @@map("drivers")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// DRIVER-COMPANY ASSIGNMENTS (Many-to-Many with role)
+// ═══════════════════════════════════════════════════════════════════════════
+model DriverCompanyAssignment {
+  id        Int @id @default(autoincrement())
+  driverId  Int @map("driver_id")
+  companyId Int @map("company_id")
+
+  // Role per company
+  role String // 'driver', 'co_passenger', 'cleaner'
+
+  // Motive driver ID specific to this company
+  motiveDriverIdInCompany Int? @map("motive_driver_id_in_company")
+
+  isActive Boolean  @default(true) @map("is_active")
+  joinedAt DateTime @default(now()) @map("joined_at")
+
+  // Relations
+  driver  Driver  @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@unique([driverId, companyId])
+  @@index([driverId])
+  @@index([companyId])
+  @@map("driver_company_assignments")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// DRIVING SESSIONS (Created automatically from webhooks)
+// ═══════════════════════════════════════════════════════════════════════════
+model DrivingSession {
+  id        Int    @id @default(autoincrement())
+  sessionId String @unique @map("session_id")
+
+  // Who & Where
+  driverId       Int @map("driver_id")
+  companyId      Int @map("company_id")
+  motiveDriverId Int @map("motive_driver_id")
+
+  // Timing
+  startedAt DateTime  @map("started_at")
+  endedAt   DateTime? @map("ended_at")
+
+  // Status
+  dutyStatus String @map("duty_status") // 'driving', 'on_duty', 'off_duty'
+
+  // Blocking state
+  blockingActive Boolean @default(false) @map("blocking_active")
+  blockedApps    Json?   @map("blocked_apps") // Snapshot of apps blocked
+
+  // Metrics
+  totalBlockAttempts Int @default(0) @map("total_block_attempts")
+
+  // Tamper detection
+  isTampered     Boolean?  @default(false) @map("is_tampered")
+  tamperedAt     DateTime? @map("tampered_at")
+  tamperedReason String?   @map("tampered_reason")
+
+  // Metadata
+  vehicleId Int?    @map("vehicle_id")
+  deviceId  String? @map("device_id")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  driver  Driver  @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([driverId, companyId])
+  @@index([companyId, endedAt])
+  @@index([sessionId])
+  @@map("driving_sessions")
+}
+// ═══════════════════════════════════════════════════════════════════════════
+// MOTIVE WEBHOOKS (Audit log of all webhooks received)
+// ═══════════════════════════════════════════════════════════════════════════
+model MotiveWebhook {
+  id BigInt @id @default(autoincrement())
+
+  // Webhook metadata
+  action  String @map("action") // 'user_duty_status_updated'
+  trigger String @map("trigger") // 'created', 'updated', 'deleted'
+
+  // Driver info from Motive
+  motiveDriverId Int     @map("motive_driver_id") // webhook.id field
+  driverRole     String? @map("driver_role") // 'driver', 'admin'
+  firstName      String? @map("first_name")
+  lastName       String? @map("last_name")
+  username       String? @map("username")
+
+  // Company (if available in webhook)
+  driverCompanyId Int? @map("driver_company_id") // Motive's company ID
+
+  // Full payload from Motive
+  payload Json
+
+  // Parsed duty status
+  dutyStatus         String? @map("duty_status")
+  previousDutyStatus String? @map("previous_duty_status") // We'll track this ourselves
+
+  // Processing status
+  processingStatus String    @default("pending") @map("processing_status")
+  processedAt      DateTime? @map("processed_at")
+  errorMessage     String?   @map("error_message") @db.Text
+
+  // Link to our driver (if found)
+  ourDriverId Int? @map("our_driver_id")
+
+  // Link to created/updated session
+  sessionId Int? @map("session_id")
+
+  receivedAt DateTime @default(now()) @map("received_at")
+
+  @@index([motiveDriverId, receivedAt])
+  @@index([processingStatus])
+  @@index([ourDriverId])
+  @@index([driverCompanyId])
+  @@map("motive_webhooks")
+}
