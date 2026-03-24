@@ -14,6 +14,9 @@ export function validateMotiveHMAC(
   next: NextFunction
 ) {
   const signature = req.headers['x-motive-signature'] as string;
+  console.log('Validating HMAC signature:', req.body, 'header:', req.headers);
+  console.log("SNS Message:", req.body);
+  console.log("Actual Motive Payload:", JSON.parse(req.body.Payload));
 
   // For development: Allow skipping validation if no secret set
   if (!process.env.MOTIVE_WEBHOOK_SECRET) {

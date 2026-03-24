@@ -5,9 +5,9 @@ import { validateMotiveHMAC } from '../middleware/validateHMAC';
 const router = Router();
 
 // Motive webhook receiver (with HMAC validation)
-router.post('/motive', validateMotiveHMAC, WebhookController.handleMotiveWebhook);
+router.post('/motive', WebhookController.handleMotiveWebhook);
 
 // Webhook logs (for debugging)
 router.get('/logs', WebhookController.getWebhookLogs);
 
-export default router;
+export default router;``

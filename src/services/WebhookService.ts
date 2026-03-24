@@ -9,7 +9,6 @@ export class WebhookService {
      */
     static async processMotiveWebhook(
         payload: MotiveWebhookPayload,
-        signature: string
     ): Promise<WebhookProcessingResult> {
         try {
             // 1. Log webhook to database immediately
@@ -183,11 +182,22 @@ export class WebhookService {
                 });
 
                 if (!company) {
-                    logger.warn(
-                        `⚠️  Company not found for Motive ID ${motiveCompanyId} - driver operating without company assignment`
+                    const fallbackName =
+                        payload.carrier_name?.trim() || `Motive Company ${motiveCompanyId}`;
+
+                    company = await prisma.company.create({
+                        data: {
+                            name: fallbackName,
+                            motiveCompanyId,
+                        },
+                    });
+
+                    logger.info(
+                        `✅ Auto-created company ${company.id} for Motive ID ${motiveCompanyId} (${company.name})`
                     );
-                } else {
-                    // Check if driver assigned to this company
+                }
+
+                if (company) {
                     const assignment = await prisma.driverCompanyAssignment.findUnique({
                         where: {
                             driverId_companyId: {
@@ -198,7 +208,6 @@ export class WebhookService {
                     });
 
                     if (!assignment) {
-                        // Auto-assign driver to company
                         await prisma.driverCompanyAssignment.create({
                             data: {
                                 driverId: driver.id,

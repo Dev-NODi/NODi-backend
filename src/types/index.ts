@@ -1,5 +1,24 @@
 import { z } from 'zod';
 
+const intFromNumberOrString = z.preprocess((value) => {
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : value;
+  }
+  return value;
+}, z.number().int());
+
+const nullableIntFromNumberOrString = z.preprocess((value) => {
+  if (value === null || value === undefined || value === '') {
+    return null;
+  }
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : value;
+  }
+  return value;
+}, z.number().int().nullable());
+
 // ═══════════════════════════════════════════════════════════════════════════
 // COMPANY SCHEMAS
 // ═══════════════════════════════════════════════════════════════════════════
@@ -51,7 +70,7 @@ export const MotiveWebhookSchema = z.object({
   trigger: z.string(), // 'created', 'updated', 'deleted'
   
   // Driver ID (this is the Motive driver ID)
-  id: z.number().int(),
+  id: intFromNumberOrString,
   
   // Driver info
   role: z.string(), // 'driver', 'admin', etc.
@@ -63,7 +82,7 @@ export const MotiveWebhookSchema = z.object({
   phone_ext: z.string().nullable(),
   
   // Company info
-  driver_company_id: z.number().int().nullable(),
+  driver_company_id: nullableIntFromNumberOrString,
   
   // Carrier/Terminal info
   carrier_name: z.string().nullable(),

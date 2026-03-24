@@ -176,12 +176,13 @@ class SessionService {
     dutyStatus: string
   ) {
     const sessionId = `session_${Date.now()}_${driverId}`;
+    const resolvedCompanyId = await this.resolveCompanyIdForSession(driverId, companyId);
 
     const session = await prisma.drivingSession.create({
       data: {
         sessionId,
         driverId,
-        companyId: companyId || 0, // Use 0 as placeholder if no company
+        companyId: resolvedCompanyId,
         motiveDriverId,
         startedAt: new Date(),
         dutyStatus,
@@ -195,6 +196,59 @@ class SessionService {
     );
 
     return session;
+  }
+
+  /**
+   * Ensure session writes always use a valid company FK.
+   * Priority: provided companyId -> driver's latest assignment -> fallback placeholder company.
+   */
+  private async resolveCompanyIdForSession(
+    driverId: number,
+    companyId: number | null
+  ): Promise<number> {
+    if (companyId) {
+      return companyId;
+    }
+
+    const latestAssignment = await prisma.driverCompanyAssignment.findFirst({
+      where: {
+        driverId,
+        isActive: true,
+      },
+      orderBy: {
+        joinedAt: 'desc',
+      },
+      select: {
+        companyId: true,
+      },
+    });
+
+    if (latestAssignment?.companyId) {
+      return latestAssignment.companyId;
+    }
+
+    const fallbackCompanyName = 'Unassigned Company';
+    const existingFallback = await prisma.company.findFirst({
+      where: { name: fallbackCompanyName },
+      select: { id: true },
+    });
+
+    if (existingFallback) {
+      return existingFallback.id;
+    }
+
+    const createdFallback = await prisma.company.create({
+      data: {
+        name: fallbackCompanyName,
+      },
+      select: { id: true },
+    });
+
+    logger.warn(
+      `⚠️ No company context for driver ${driverId}; created fallback company ${createdFallback.id}`
+    );
+
+    return createdFallback.id;
   }
 
   /**

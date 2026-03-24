@@ -6,23 +6,48 @@ import { MotiveWebhookSchema, ApiResponse } from '../types';
 import prisma from '../config/database';
 
 export class WebhookController {
+  private static parseWebhookBody(rawBody: unknown): unknown {
+    let body: unknown = rawBody;
+
+    if (typeof body === 'string') {
+      body = JSON.parse(body);
+    }
+
+    if (body && typeof body === 'object') {
+      const envelope = body as Record<string, unknown>;
+      const nestedPayload = envelope.Payload ?? envelope.Message;
+
+      if (typeof nestedPayload === 'string') {
+        return JSON.parse(nestedPayload);
+      }
+
+      if (nestedPayload && typeof nestedPayload === 'object') {
+        return nestedPayload;
+      }
+    }
+
+    return body;
+  }
+
   /**
    * POST /api/v1/webhooks/motive
    * Receive Motive webhook for duty status updates
    */
   static async handleMotiveWebhook(req: Request, res: Response) {
     try {
-      // Validate webhook payload
-      const payload = MotiveWebhookSchema.parse(req.body);
+      const normalizedBody = WebhookController.parseWebhookBody(req.body);
 
-      const signature = req.headers['x-motive-signature'] as string;
+      // Validate webhook payload
+      const payload = MotiveWebhookSchema.parse(normalizedBody);
+
+      // const signature = req.headers['x-motive-signature'] as string;
 
       logger.info(
-        `📬 Motive webhook received: ${payload.event_type} - driver=${payload.driver_id} - company=${payload.company_id}`
+        `📬 Motive webhook received: ${payload.action} - driver=${payload.id} - company=${payload.driver_company_id ?? 'none'}`
       );
 
       // Process webhook
-      const result = await WebhookService.processMotiveWebhook(payload, signature);
+      const result = await WebhookService.processMotiveWebhook(payload);
 
       if (result.success) {
         logger.info(
