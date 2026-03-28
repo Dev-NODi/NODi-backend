@@ -230,7 +230,6 @@ export class DriverController {
             select: {
               id: true,
               name: true,
-              phone: true,
             },
           },
           company: {
@@ -306,7 +305,6 @@ export class DriverController {
         },
         select: {
           id: true,
-          phone: true,
           deviceId: true,
           devicePlatform: true,
           fcmTokenUpdatedAt: true,

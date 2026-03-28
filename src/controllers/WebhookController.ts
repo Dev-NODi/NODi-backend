@@ -35,6 +35,8 @@ export class WebhookController {
    */
   static async handleMotiveWebhook(req: Request, res: Response) {
     try {
+      console.log('Received raw webhook body:', req.body);
+      // return res.json({ success: true, message: 'Webhook received' } as ApiResponse);
       const normalizedBody = WebhookController.parseWebhookBody(req.body);
 
       // Validate webhook payload

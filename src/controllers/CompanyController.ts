@@ -82,7 +82,6 @@ export class CompanyController {
                 select: {
                   id: true,
                   name: true,
-                  phone: true,
                   email: true,
                 },
               },
