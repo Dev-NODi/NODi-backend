@@ -48,10 +48,11 @@ model Company {
 // DRIVERS
 // ═══════════════════════════════════════════════════════════════════════════
 model Driver {
-  id    Int     @id @default(autoincrement())
-  phone String  @unique
-  email String?
-  name  String?
+  id           Int     @id @default(autoincrement())
+  phone        String? @unique
+  email        String? @unique
+  passwordHash String? @map("password_hash")
+  name         String?
 
   motiveDriverId Int? @map("motive_driver_id")
 
@@ -69,8 +70,10 @@ model Driver {
   // Relations
   companies DriverCompanyAssignment[]
   sessions  DrivingSession[]
+  pushCommands PushCommand[]
 
   @@index([phone])
+  @@index([email])
   @@index([motiveDriverId])
   @@map("drivers")
 }
@@ -123,6 +126,11 @@ model DrivingSession {
 
   // Blocking state
   blockingActive Boolean @default(false) @map("blocking_active")
+  requestedBlockingState Boolean? @map("requested_blocking_state")
+  appliedBlockingState Boolean? @map("applied_blocking_state")
+  lastCommandId String? @map("last_command_id")
+  lastAckAt DateTime? @map("last_ack_at")
+  lastAckReason String? @map("last_ack_reason")
   blockedApps    Json?   @map("blocked_apps") // Snapshot of apps blocked
 
   // Metrics
@@ -143,11 +151,47 @@ model DrivingSession {
   // Relations
   driver  Driver  @relation(fields: [driverId], references: [id], onDelete: Cascade)
   company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  pushCommands PushCommand[]
 
   @@index([driverId, companyId])
   @@index([companyId, endedAt])
   @@index([sessionId])
   @@map("driving_sessions")
+}
+
+model PushCommand {
+  id BigInt @id @default(autoincrement())
+
+  commandId String @unique @map("command_id")
+  driverId Int @map("driver_id")
+  sessionId Int? @map("session_id")
+
+  requestedAction String @map("requested_action") // block | unblock
+  shouldBlock Boolean @map("should_block")
+  dutyStatus String? @map("duty_status")
+  source String @default("webhook")
+
+  pushSent Boolean @default(false) @map("push_sent")
+  sseSent Boolean @default(false) @map("sse_sent")
+  sentAt DateTime? @map("sent_at")
+
+  ackApplied Boolean? @map("ack_applied")
+  ackSource String? @map("ack_source")
+  ackTimestamp DateTime? @map("ack_timestamp")
+  ackReason String? @map("ack_reason") @db.Text
+  ackDeviceId String? @map("ack_device_id")
+  rawAck Json? @map("raw_ack")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  driver  Driver @relation(fields: [driverId], references: [id], onDelete: Cascade)
+  session DrivingSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+
+  @@index([driverId, createdAt])
+  @@index([sessionId])
+  @@index([ackApplied])
+  @@map("push_commands")
 }
 // ═══════════════════════════════════════════════════════════════════════════
 // MOTIVE WEBHOOKS (Audit log of all webhooks received)

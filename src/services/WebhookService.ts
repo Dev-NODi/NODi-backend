@@ -270,14 +270,14 @@ export class WebhookService {
             );
 
             logger.info(
-                `📲 Notification sent via ${notification.method}: ${notification.success ? 'success' : 'failed'}`
+                `📲 Notification result: method=${notification.method} success=${notification.success} sse=${notification.sseSent} push=${notification.pushSent}`
             );
 
             return {
                 success: true,
                 driverId: driver.id,
                 sessionId: sessionTransition.session?.id,
-                message: `Duty status ${dutyStatus} processed - session ${sessionTransition.action} - notification via ${notification.method}`,
+                message: `Duty status ${dutyStatus} processed - session ${sessionTransition.action} - notification via ${notification.method} - commandId=${notification.commandId}`,
             };
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : 'Unknown error';

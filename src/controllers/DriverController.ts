@@ -2,9 +2,44 @@ import { Request, Response } from 'express';
 import { z } from 'zod';
 import prisma from '../config/database';
 import logger from '../config/logger';
-import { RegisterDriverSchema, AssignDriverSchema, ApiResponse } from '../types';
+import PushNotificationService from '../services/PushNotificationService';
+import {
+  RegisterDriverSchema,
+  AssignDriverSchema,
+  UpdatePushTokenSchema,
+  ApiResponse,
+} from '../types';
 
 export class DriverController {
+  private static maskToken(token: string) {
+    if (!token || token.length < 10) return '***';
+    return `${token.slice(0, 8)}...${token.slice(-6)}`;
+  }
+
+  private static normalizeRequestedAction(input: {
+    requestedAction?: string;
+    action?: string;
+    shouldBlock?: boolean;
+    dutyStatus?: string;
+    duty_status?: string;
+  }): 'block' | 'unblock' {
+    const normalizedAction = (input.requestedAction || input.action || '').toLowerCase();
+    const blockValues = new Set(['block', 'start', 'enable']);
+    const unblockValues = new Set(['unblock', 'stop', 'disable']);
+
+    if (blockValues.has(normalizedAction)) return 'block';
+    if (unblockValues.has(normalizedAction)) return 'unblock';
+
+    if (typeof input.shouldBlock === 'boolean') {
+      return input.shouldBlock ? 'block' : 'unblock';
+    }
+
+    const duty = (input.dutyStatus || input.duty_status || '').toLowerCase();
+    if (duty === 'driving') return 'block';
+
+    return 'unblock';
+  }
+
   /**
    * POST /api/v1/drivers/register
    * Register a driver (phone-based, no OAuth)
@@ -229,6 +264,317 @@ export class DriverController {
       res.status(500).json({
         success: false,
         error: 'Failed to assign driver',
+      } as ApiResponse);
+    }
+  }
+
+  /**
+   * POST /api/v1/drivers/push-token
+   * Update driver's FCM push token
+   */
+  static async updatePushToken(req: Request, res: Response) {
+    try {
+      const data = UpdatePushTokenSchema.parse(req.body);
+      const maskedToken = DriverController.maskToken(data.fcmToken);
+
+      logger.info(
+        `📲 Push token received: driver=${data.driverId} platform=${data.devicePlatform || 'unknown'} token=${maskedToken}`
+      );
+
+      const existingDriver = await prisma.driver.findUnique({
+        where: { id: data.driverId },
+        select: { id: true, fcmToken: true },
+      });
+
+      if (!existingDriver) {
+        logger.warn(`⚠️ Push token update failed: driver ${data.driverId} not found`);
+        return res.status(404).json({
+          success: false,
+          error: 'Driver not found',
+        } as ApiResponse);
+      }
+
+      const tokenChanged = existingDriver.fcmToken !== data.fcmToken;
+      const updatedDriver = await prisma.driver.update({
+        where: { id: data.driverId },
+        data: {
+          fcmToken: data.fcmToken,
+          fcmTokenUpdatedAt: new Date(),
+          deviceId: data.deviceId,
+          devicePlatform: data.devicePlatform,
+          lastSeenAt: new Date(),
+        },
+        select: {
+          id: true,
+          phone: true,
+          deviceId: true,
+          devicePlatform: true,
+          fcmTokenUpdatedAt: true,
+        },
+      });
+
+      logger.info(
+        `✅ Push token stored: driver=${updatedDriver.id} changed=${tokenChanged} updatedAt=${updatedDriver.fcmTokenUpdatedAt?.toISOString()}`
+      );
+
+      return res.json({
+        success: true,
+        data: {
+          ...updatedDriver,
+          tokenChanged,
+        },
+        message: tokenChanged ? 'Push token updated' : 'Push token already up to date',
+      } as ApiResponse);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        logger.warn('⚠️ Push token validation failed', error.issues);
+        return res.status(400).json({
+          success: false,
+          error: 'Validation error',
+          data: error.issues,
+        } as ApiResponse);
+      }
+
+      logger.error('Push token update error:', error);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to update push token',
+      } as ApiResponse);
+    }
+  }
+
+  /**
+   * POST /api/v1/drivers/:id/test-push
+   * Send test silent push to validate FCM delivery for a driver
+   */
+  static async testPush(req: Request, res: Response) {
+    try {
+      const driverId = parseInt(req.params.id as string);
+      if (isNaN(driverId)) {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid driver ID',
+        } as ApiResponse);
+      }
+
+      const bodySchema = z.object({
+        shouldBlock: z.boolean().optional(),
+        dutyStatus: z.string().optional(),
+        message: z.string().optional(),
+        mode: z.enum(['silent', 'visible', 'both']).optional(),
+      });
+      const body = bodySchema.parse(req.body || {});
+
+      const driver = await prisma.driver.findUnique({
+        where: { id: driverId },
+        select: { id: true, fcmToken: true },
+      });
+
+      if (!driver) {
+        return res.status(404).json({
+          success: false,
+          error: 'Driver not found',
+        } as ApiResponse);
+      }
+
+      if (!driver.fcmToken) {
+        return res.status(400).json({
+          success: false,
+          error: 'Driver has no FCM token',
+        } as ApiResponse);
+      }
+
+      const payload = {
+        shouldBlock: body.shouldBlock ?? true,
+        dutyStatus: body.dutyStatus || 'driving',
+        message: body.message || 'NODi push test',
+        mode: body.mode || 'both',
+      };
+
+      logger.info(
+        `🧪 Sending test push to driver=${driverId} mode=${payload.mode} shouldBlock=${payload.shouldBlock}`
+      );
+      const result = await PushNotificationService.sendBlockingCommand(
+        driverId,
+        payload.shouldBlock,
+        payload.dutyStatus,
+        undefined,
+        undefined,
+        'manual_test',
+        payload.message
+      );
+
+      let visibleSent = false;
+      if (payload.mode === 'visible' || payload.mode === 'both') {
+        visibleSent = await PushNotificationService.sendVisibleNotification(
+          driver.fcmToken,
+          payload.shouldBlock ? 'NODi: Block Enabled' : 'NODi: Block Disabled',
+          payload.message,
+          {
+            type: 'blocking_command',
+            commandId: result.commandId,
+            action: payload.shouldBlock ? 'block' : 'unblock',
+          }
+        );
+      }
+
+      const silentRequested = payload.mode === 'silent' || payload.mode === 'both';
+      const visibleRequested = payload.mode === 'visible' || payload.mode === 'both';
+      const success =
+        (!silentRequested || result.pushSent) &&
+        (!visibleRequested || visibleSent);
+
+      return res.json({
+        success,
+        data: {
+          driverId,
+          commandId: result.commandId,
+          delivery: {
+            method: payload.mode,
+            sseSent: result.sseSent,
+            silentPushSent: result.pushSent,
+            visiblePushSent: visibleSent,
+          },
+        },
+        message: success ? 'Test push sent' : 'Test push failed',
+      } as ApiResponse);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({
+          success: false,
+          error: 'Validation error',
+          data: error.issues,
+        } as ApiResponse);
+      }
+
+      logger.error('Test push error:', error);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to send test push',
+      } as ApiResponse);
+    }
+  }
+
+  /**
+   * POST /api/v1/drivers/push-command-ack
+   * Receive app ACK for block/unblock command application
+   */
+  static async pushCommandAck(req: Request, res: Response) {
+    try {
+      const ackSchema = z.object({
+        commandId: z.string().min(1),
+        driverId: z.number().int().positive(),
+        deviceId: z.string().optional(),
+        requestedAction: z.string().optional(),
+        action: z.string().optional(),
+        shouldBlock: z.boolean().optional(),
+        dutyStatus: z.string().optional(),
+        duty_status: z.string().optional(),
+        applied: z.boolean(),
+        source: z.string().optional(),
+        timestamp: z.string().optional(),
+        reason: z.string().optional(),
+      });
+
+      const ack = ackSchema.parse(req.body);
+      const requestedAction = DriverController.normalizeRequestedAction(ack);
+      const shouldBlock = requestedAction === 'block';
+      const ackTimestamp = ack.timestamp ? new Date(ack.timestamp) : new Date();
+
+      const driver = await prisma.driver.findUnique({
+        where: { id: ack.driverId },
+        select: { id: true },
+      });
+      if (!driver) {
+        return res.status(404).json({
+          success: false,
+          error: 'Driver not found',
+        } as ApiResponse);
+      }
+
+      logger.info(
+        `📩 Push ACK received: commandId=${ack.commandId} driver=${ack.driverId} action=${requestedAction} applied=${ack.applied}`
+      );
+
+      const command = await prisma.pushCommand.upsert({
+        where: { commandId: ack.commandId },
+        create: {
+          commandId: ack.commandId,
+          driverId: ack.driverId,
+          requestedAction,
+          shouldBlock,
+          dutyStatus: ack.dutyStatus || ack.duty_status,
+          source: ack.source || 'mobile_ack_only',
+          ackApplied: ack.applied,
+          ackSource: ack.source || 'app',
+          ackTimestamp,
+          ackReason: ack.reason,
+          ackDeviceId: ack.deviceId,
+          rawAck: ack as any,
+        },
+        update: {
+          ackApplied: ack.applied,
+          ackSource: ack.source || 'app',
+          ackTimestamp,
+          ackReason: ack.reason,
+          ackDeviceId: ack.deviceId,
+          rawAck: ack as any,
+        },
+        select: {
+          commandId: true,
+          sessionId: true,
+          shouldBlock: true,
+        },
+      });
+
+      if (command.sessionId) {
+        await prisma.drivingSession.update({
+          where: { id: command.sessionId },
+          data: {
+            requestedBlockingState: command.shouldBlock,
+            appliedBlockingState: ack.applied ? command.shouldBlock : null,
+            blockingActive: ack.applied ? command.shouldBlock : undefined,
+            lastCommandId: command.commandId,
+            lastAckAt: ackTimestamp,
+            lastAckReason: ack.reason,
+          },
+        });
+      }
+
+      if (ack.deviceId) {
+        await prisma.driver.update({
+          where: { id: ack.driverId },
+          data: {
+            deviceId: ack.deviceId,
+            lastSeenAt: new Date(),
+          },
+        });
+      }
+
+      return res.json({
+        success: true,
+        data: {
+          commandId: ack.commandId,
+          driverId: ack.driverId,
+          requestedAction,
+          applied: ack.applied,
+          shouldBlock,
+        },
+        message: 'ACK stored',
+      } as ApiResponse);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({
+          success: false,
+          error: 'Validation error',
+          data: error.issues,
+        } as ApiResponse);
+      }
+
+      logger.error('Push command ACK error:', error);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to store push command ACK',
       } as ApiResponse);
     }
   }

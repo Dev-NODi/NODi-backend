@@ -43,6 +43,21 @@ export const RegisterDriverSchema = z.object({
 
 export type RegisterDriverDTO = z.infer<typeof RegisterDriverSchema>;
 
+export const AuthRegisterSchema = z.object({
+  name: z.string().trim().min(1, 'Name is required'),
+  email: z.string().trim().email('Valid email is required'),
+  password: z.string().min(8, 'Password must be at least 8 characters'),
+});
+
+export type AuthRegisterDTO = z.infer<typeof AuthRegisterSchema>;
+
+export const AuthLoginSchema = z.object({
+  email: z.string().trim().email('Valid email is required'),
+  password: z.string().min(1, 'Password is required'),
+});
+
+export type AuthLoginDTO = z.infer<typeof AuthLoginSchema>;
+
 export const AssignDriverSchema = z.object({
   companyId: z.number().int().positive(),
   role: z.enum(['driver', 'co_passenger', 'cleaner']),
@@ -50,6 +65,15 @@ export const AssignDriverSchema = z.object({
 });
 
 export type AssignDriverDTO = z.infer<typeof AssignDriverSchema>;
+
+export const UpdatePushTokenSchema = z.object({
+  driverId: z.number().int().positive(),
+  fcmToken: z.string().min(20, 'Invalid FCM token'),
+  deviceId: z.string().optional(),
+  devicePlatform: z.enum(['ios', 'android']).optional(),
+});
+
+export type UpdatePushTokenDTO = z.infer<typeof UpdatePushTokenSchema>;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // API RESPONSE TYPES

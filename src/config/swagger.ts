@@ -16,6 +16,10 @@ export const swaggerDocument = {
     ],
     tags: [
         {
+            name: 'Auth',
+            description: 'Driver authentication endpoints',
+        },
+        {
             name: 'Companies',
             description: 'Company management endpoints',
         },
@@ -33,6 +37,86 @@ export const swaggerDocument = {
         },
     ],
     paths: {
+        '/api/v1/auth/register': {
+            post: {
+                tags: ['Auth'],
+                summary: 'Register a driver account',
+                requestBody: {
+                    required: true,
+                    content: {
+                        'application/json': {
+                            schema: {
+                                type: 'object',
+                                required: ['name', 'email', 'password'],
+                                properties: {
+                                    name: {
+                                        type: 'string',
+                                        example: 'John Driver',
+                                    },
+                                    email: {
+                                        type: 'string',
+                                        example: 'driver@example.com',
+                                    },
+                                    password: {
+                                        type: 'string',
+                                        example: 'StrongPass123',
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
+                responses: {
+                    201: {
+                        description: 'Driver account registered successfully',
+                    },
+                    409: {
+                        description: 'Email already exists',
+                    },
+                    400: {
+                        description: 'Validation error',
+                    },
+                },
+            },
+        },
+        '/api/v1/auth/login': {
+            post: {
+                tags: ['Auth'],
+                summary: 'Login driver account',
+                requestBody: {
+                    required: true,
+                    content: {
+                        'application/json': {
+                            schema: {
+                                type: 'object',
+                                required: ['email', 'password'],
+                                properties: {
+                                    email: {
+                                        type: 'string',
+                                        example: 'driver@example.com',
+                                    },
+                                    password: {
+                                        type: 'string',
+                                        example: 'StrongPass123',
+                                    },
+                                },
+                            },
+                        },
+                    },
+                },
+                responses: {
+                    200: {
+                        description: 'Login successful',
+                    },
+                    401: {
+                        description: 'Invalid credentials',
+                    },
+                    400: {
+                        description: 'Validation error',
+                    },
+                },
+            },
+        },
         '/api/v1/companies': {
             post: {
                 tags: ['Companies'],

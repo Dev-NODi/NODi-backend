@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import authRoutes from './authRoutes';
 import companyRoutes from './companyRoutes';
 import driverRoutes from './driverRoutes';
 import webhookRoutes from './webhookRoutes';
@@ -7,6 +8,7 @@ import sessionRoutes from './sessionRoutes';
 
 const router = Router();
 
+router.use('/auth', authRoutes);
 router.use('/companies', companyRoutes);
 router.use('/drivers', driverRoutes);
 router.use('/webhooks', webhookRoutes);
