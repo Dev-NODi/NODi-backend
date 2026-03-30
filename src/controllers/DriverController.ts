@@ -41,6 +41,141 @@ export class DriverController {
   }
 
   /**
+   * GET /api/v1/drivers/:id/duty-status
+   * Get driver's current duty status for the mobile app
+   */
+  static async getCurrentDutyStatus(req: Request, res: Response) {
+    try {
+      const driverId = parseInt(req.params.id as string);
+
+      if (isNaN(driverId)) {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid driver ID',
+        } as ApiResponse);
+      }
+
+      const driver = await prisma.driver.findUnique({
+        where: { id: driverId },
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          lastSeenAt: true,
+        },
+      });
+
+      if (!driver) {
+        return res.status(404).json({
+          success: false,
+          error: 'Driver not found',
+        } as ApiResponse);
+      }
+
+      const activeSession = await prisma.drivingSession.findFirst({
+        where: {
+          driverId,
+          endedAt: null,
+        },
+        orderBy: {
+          startedAt: 'desc',
+        },
+        select: {
+          id: true,
+          sessionId: true,
+          companyId: true,
+          dutyStatus: true,
+          blockingActive: true,
+          requestedBlockingState: true,
+          appliedBlockingState: true,
+          lastCommandId: true,
+          lastAckAt: true,
+          lastAckReason: true,
+          startedAt: true,
+          updatedAt: true,
+        },
+      });
+
+      const latestWebhook = await prisma.motiveWebhook.findFirst({
+        where: {
+          ourDriverId: driverId,
+        },
+        orderBy: {
+          receivedAt: 'desc',
+        },
+        select: {
+          dutyStatus: true,
+          receivedAt: true,
+        },
+      });
+
+      const currentDutyStatus =
+        activeSession?.dutyStatus ||
+        latestWebhook?.dutyStatus ||
+        'off_duty';
+
+      const expectedBlocking =
+        activeSession?.requestedBlockingState ??
+        (currentDutyStatus === 'driving');
+      const appliedBlocking = activeSession?.appliedBlockingState ?? null;
+
+      let syncState: 'synced' | 'out_of_sync' | 'pending_ack' | 'unknown' = 'unknown';
+      if (!activeSession?.lastCommandId) {
+        syncState = activeSession ? 'unknown' : 'synced';
+      } else if (appliedBlocking === null) {
+        syncState = 'pending_ack';
+      } else if (appliedBlocking === expectedBlocking) {
+        syncState = 'synced';
+      } else {
+        syncState = 'out_of_sync';
+      }
+
+      return res.json({
+        success: true,
+        data: {
+          driver: {
+            id: driver.id,
+            name: driver.name,
+            email: driver.email,
+            lastSeenAt: driver.lastSeenAt,
+          },
+          dutyStatus: {
+            current: currentDutyStatus,
+            source: activeSession ? 'active_session' : latestWebhook ? 'latest_webhook' : 'default',
+            updatedAt: activeSession?.updatedAt || latestWebhook?.receivedAt || null,
+          },
+          session: activeSession
+            ? {
+                id: activeSession.id,
+                sessionId: activeSession.sessionId,
+                companyId: activeSession.companyId,
+                startedAt: activeSession.startedAt,
+                blockingActive: activeSession.blockingActive,
+                requestedBlockingState: activeSession.requestedBlockingState,
+                appliedBlockingState: activeSession.appliedBlockingState,
+                lastCommandId: activeSession.lastCommandId,
+                lastAckAt: activeSession.lastAckAt,
+                lastAckReason: activeSession.lastAckReason,
+              }
+            : null,
+          sync: {
+            motiveExpectedBlocking: expectedBlocking,
+            appAppliedBlocking: appliedBlocking,
+            inSync: syncState === 'synced',
+            syncState,
+          },
+        },
+      } as ApiResponse);
+    } catch (error) {
+      logger.error('Driver duty status fetch error:', error);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to fetch current duty status',
+      } as ApiResponse);
+    }
+  }
+
+  /**
    * POST /api/v1/drivers/register
    * Register a driver (phone-based, no OAuth)
    */
@@ -360,6 +495,7 @@ export class DriverController {
         dutyStatus: z.string().optional(),
         message: z.string().optional(),
         mode: z.enum(['silent', 'visible', 'both']).optional(),
+        apnsTopic: z.string().optional(),
       });
       const body = bodySchema.parse(req.body || {});
 
@@ -390,27 +526,54 @@ export class DriverController {
       };
 
       logger.info(
-        `🧪 Sending test push to driver=${driverId} mode=${payload.mode} shouldBlock=${payload.shouldBlock}`
-      );
-      const result = await PushNotificationService.sendBlockingCommand(
-        driverId,
-        payload.shouldBlock,
-        payload.dutyStatus,
-        undefined,
-        undefined,
-        'manual_test',
-        payload.message
+        `🧪 Sending test push to driver=${driverId} mode=${payload.mode} shouldBlock=${payload.shouldBlock} topic=${body.apnsTopic || process.env.IOS_BUNDLE_ID || process.env.APNS_TOPIC || 'none'}`
       );
 
+      let result: {
+        method: 'sse' | 'push' | 'both' | 'failed';
+        success: boolean;
+        sseSent: boolean;
+        pushSent: boolean;
+        commandId: string;
+        messageId?: string;
+        pushError?: string;
+      } = {
+        method: 'failed' as const,
+        success: false,
+        sseSent: false,
+        pushSent: false,
+        commandId: `cmd-test-${Date.now()}`,
+        messageId: undefined as string | undefined,
+        pushError: undefined as string | undefined,
+      };
+
+      if (payload.mode === 'silent' || payload.mode === 'both') {
+        result = await PushNotificationService.sendBlockingCommand(
+          driverId,
+          payload.shouldBlock,
+          payload.dutyStatus,
+          undefined,
+          undefined,
+          'manual_test',
+          payload.message,
+          body.apnsTopic
+        );
+      }
+
       let visibleSent = false;
+      let visibleCommandId = result.commandId;
       if (payload.mode === 'visible' || payload.mode === 'both') {
+        if (!visibleCommandId) {
+          visibleCommandId = `cmd-visible-${Date.now()}`;
+        }
+
         visibleSent = await PushNotificationService.sendVisibleNotification(
           driver.fcmToken,
           payload.shouldBlock ? 'NODi: Block Enabled' : 'NODi: Block Disabled',
           payload.message,
           {
             type: 'blocking_command',
-            commandId: result.commandId,
+            commandId: visibleCommandId,
             action: payload.shouldBlock ? 'block' : 'unblock',
           }
         );
@@ -426,11 +589,13 @@ export class DriverController {
         success,
         data: {
           driverId,
-          commandId: result.commandId,
+          commandId: payload.mode === 'visible' ? visibleCommandId : result.commandId,
           delivery: {
             method: payload.mode,
             sseSent: result.sseSent,
             silentPushSent: result.pushSent,
+            silentMessageId: result.messageId,
+            silentPushError: result.pushError,
             visiblePushSent: visibleSent,
           },
         },
@@ -449,6 +614,96 @@ export class DriverController {
       return res.status(500).json({
         success: false,
         error: 'Failed to send test push',
+      } as ApiResponse);
+    }
+  }
+
+  /**
+   * POST /api/v1/drivers/:id/test-silent-apns
+   * Send exact APNs background push shape via FCM for iOS testing
+   */
+  static async testSilentApnsPush(req: Request, res: Response) {
+    try {
+      const driverId = parseInt(req.params.id as string);
+      if (isNaN(driverId)) {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid driver ID',
+        } as ApiResponse);
+      }
+
+      const bodySchema = z.object({
+        action: z.enum(['block', 'unblock']),
+        dutyStatus: z.string().min(1),
+        commandId: z.string().min(1).optional(),
+        apnsTopic: z.string().min(1).optional(),
+      });
+      const body = bodySchema.parse(req.body || {});
+
+      const driver = await prisma.driver.findUnique({
+        where: { id: driverId },
+        select: { id: true, fcmToken: true },
+      });
+
+      if (!driver) {
+        return res.status(404).json({
+          success: false,
+          error: 'Driver not found',
+        } as ApiResponse);
+      }
+
+      if (!driver.fcmToken) {
+        return res.status(400).json({
+          success: false,
+          error: 'Driver has no FCM token',
+        } as ApiResponse);
+      }
+
+      const commandId =
+        body.commandId ||
+        `cmd_${new Date().toISOString().slice(0, 10).replace(/-/g, '')}_${body.action}_${driverId}`;
+      const apnsTopic =
+        body.apnsTopic ||
+        process.env.IOS_BUNDLE_ID ||
+        process.env.APNS_TOPIC;
+
+      logger.info(
+        `🧪 Sending raw APNs background push to driver=${driverId} action=${body.action} dutyStatus=${body.dutyStatus} topic=${apnsTopic || 'none'}`
+      );
+
+      const result = await PushNotificationService.sendRawApnsBackgroundPush(driver.fcmToken, {
+        type: 'blocking_command',
+        action: body.action,
+        dutyStatus: body.dutyStatus,
+        commandId,
+        apnsTopic,
+      });
+
+      return res.json({
+        success: result.success,
+        data: {
+          driverId,
+          commandId,
+          action: body.action,
+          dutyStatus: body.dutyStatus,
+          apnsTopic: apnsTopic || null,
+          messageId: result.messageId,
+        },
+        message: result.success ? 'Silent APNs push sent' : 'Silent APNs push failed',
+      } as ApiResponse);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({
+          success: false,
+          error: 'Validation error',
+          data: error.issues,
+        } as ApiResponse);
+      }
+
+      logger.error('Silent APNs push test error:', error);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to send silent APNs push',
       } as ApiResponse);
     }
   }
