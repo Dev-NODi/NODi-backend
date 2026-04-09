@@ -9,3 +9,5 @@ api.py
 firebase-adminsdk-*.json
 serviceAccountKey*.json
 node-*.json
+
+.fake

@@ -72,10 +72,6 @@ class PushNotificationService {
         },
       };
 
-
-
-      console.log('Constructed FCM message:', message);
-
       const messageId = await admin.messaging().send(message);
       logger.info(
         `📱 Raw APNs background push sent successfully to ${fcmToken.substring(0, 20)}... topic=${apnsTopic} messageId=${messageId}`
@@ -247,6 +243,22 @@ class PushNotificationService {
 
     const commandId = this.createCommandId(driverId);
     const action: 'block' | 'unblock' = shouldBlock ? 'block' : 'unblock';
+    const resolvedSessionId =
+      sessionId ||
+      (
+        await prisma.drivingSession.findFirst({
+          where: {
+            driverId,
+            endedAt: null,
+          },
+          orderBy: {
+            startedAt: 'desc',
+          },
+          select: {
+            id: true,
+          },
+        })
+      )?.id;
 
     if (!driver) {
       logger.error(`❌ Driver ${driverId} not found`);
@@ -264,7 +276,7 @@ class PushNotificationService {
       data: {
         commandId,
         driverId,
-        sessionId,
+        sessionId: resolvedSessionId,
         requestedAction: action,
         shouldBlock,
         dutyStatus,
@@ -298,7 +310,7 @@ class PushNotificationService {
       logger.info(`APNs push result: ${JSON.stringify(apnsResult)}`);
       if (pushSent) {
         logger.info(
-          `✅ Blocking command sent via APNs background payload to driver ${driverId} commandId=${apnsResult}`,apnsResult
+          `✅ Blocking command sent via APNs background payload to driver ${driverId} commandId=${commandId} sessionId=${resolvedSessionId || 'none'}`
         );
       }
     } else {
@@ -314,9 +326,9 @@ class PushNotificationService {
       },
     });
 
-    if (sessionId) {
+    if (resolvedSessionId) {
       await prisma.drivingSession.update({
-        where: { id: sessionId },
+        where: { id: resolvedSessionId },
         data: {
           requestedBlockingState: shouldBlock,
           lastCommandId: commandId,

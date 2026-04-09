@@ -7,10 +7,94 @@ import {
   RegisterDriverSchema,
   AssignDriverSchema,
   UpdatePushTokenSchema,
+  SyncBlockedAttemptsSchema,
+  UpdateAllowlistSchema,
   ApiResponse,
 } from '../types';
 
 export class DriverController {
+  private static formatBlockedAttemptCounts(raw: unknown) {
+    if (!Array.isArray(raw)) {
+      return [] as Array<{
+        bundle_id: string;
+        application_token_id: string | null;
+        attempt_count: number;
+      }>;
+    }
+
+    return raw
+      .filter((entry): entry is Record<string, unknown> => typeof entry === 'object' && entry !== null)
+      .map((entry) => ({
+        bundle_id: typeof entry.bundle_id === 'string' ? entry.bundle_id : '',
+        application_token_id:
+          typeof entry.application_token_id === 'string' ? entry.application_token_id : null,
+        attempt_count:
+          typeof entry.attempt_count === 'number' && Number.isFinite(entry.attempt_count)
+            ? Math.max(0, Math.trunc(entry.attempt_count))
+            : 0,
+      }))
+      .filter((entry) => entry.bundle_id.length > 0);
+  }
+
+  private static mergeBlockedAttemptCounts(
+    existingRaw: unknown,
+    incoming: Array<{
+      bundle_id: string;
+      application_token_id?: string;
+      attempt_count: number;
+    }>
+  ) {
+    const existing = DriverController.formatBlockedAttemptCounts(existingRaw);
+    const merged = new Map<string, {
+      bundle_id: string;
+      application_token_id: string | null;
+      attempt_count: number;
+    }>();
+
+    for (const entry of existing) {
+      const key = `${entry.bundle_id}::${entry.application_token_id || ''}`;
+      merged.set(key, entry);
+    }
+
+    let changed = false;
+
+    for (const entry of incoming) {
+      const normalized = {
+        bundle_id: entry.bundle_id,
+        application_token_id: entry.application_token_id || null,
+        attempt_count: entry.attempt_count,
+      };
+      const key = `${normalized.bundle_id}::${normalized.application_token_id || ''}`;
+      const current = merged.get(key);
+
+      if (!current || normalized.attempt_count > current.attempt_count) {
+        merged.set(key, normalized);
+        changed = true;
+      }
+    }
+
+    const counts = Array.from(merged.values()).sort((a, b) => {
+      if (a.bundle_id === b.bundle_id) {
+        return (a.application_token_id || '').localeCompare(b.application_token_id || '');
+      }
+      return a.bundle_id.localeCompare(b.bundle_id);
+    });
+
+    const total = counts.reduce((sum, entry) => sum + entry.attempt_count, 0);
+
+    return {
+      counts,
+      total,
+      changed,
+    };
+  }
+
+  private static parseDriverId(rawDriverId: string | string[] | undefined) {
+    const normalizedDriverId = Array.isArray(rawDriverId) ? rawDriverId[0] : rawDriverId;
+    const driverId = parseInt(normalizedDriverId as string, 10);
+    return Number.isNaN(driverId) ? null : driverId;
+  }
+
   private static maskToken(token: string) {
     if (!token || token.length < 10) return '***';
     return `${token.slice(0, 8)}...${token.slice(-6)}`;
@@ -46,9 +130,9 @@ export class DriverController {
    */
   static async getCurrentDutyStatus(req: Request, res: Response) {
     try {
-      const driverId = parseInt(req.params.id as string);
+      const driverId = DriverController.parseDriverId(req.params.id);
 
-      if (isNaN(driverId)) {
+      if (!driverId) {
         return res.status(400).json({
           success: false,
           error: 'Invalid driver ID',
@@ -61,6 +145,7 @@ export class DriverController {
           id: true,
           name: true,
           email: true,
+          fleetManagerPhone: true,
           lastSeenAt: true,
         },
       });
@@ -93,6 +178,7 @@ export class DriverController {
           lastAckReason: true,
           startedAt: true,
           updatedAt: true,
+          totalBlockAttempts: true,
         },
       });
 
@@ -137,6 +223,7 @@ export class DriverController {
             id: driver.id,
             name: driver.name,
             email: driver.email,
+            fleet_manager_phone: driver.fleetManagerPhone,
             lastSeenAt: driver.lastSeenAt,
           },
           dutyStatus: {
@@ -156,6 +243,7 @@ export class DriverController {
                 lastCommandId: activeSession.lastCommandId,
                 lastAckAt: activeSession.lastAckAt,
                 lastAckReason: activeSession.lastAckReason,
+                blocked_attempt_count: activeSession.totalBlockAttempts,
               }
             : null,
           sync: {
@@ -728,7 +816,7 @@ export class DriverController {
         timestamp: z.string().optional(),
         reason: z.string().optional(),
       });
-
+      console.log('Received push command ACK payload:', req.body);
       const ack = ackSchema.parse(req.body);
       const requestedAction = DriverController.normalizeRequestedAction(ack);
       const shouldBlock = requestedAction === 'block';
@@ -828,6 +916,310 @@ export class DriverController {
       return res.status(500).json({
         success: false,
         error: 'Failed to store push command ACK',
+      } as ApiResponse);
+    }
+  }
+
+  /**
+   * POST /api/v1/drivers/:driverId/sessions/current/blocked-attempts/sync
+   * Sync the authoritative blocked-attempt totals for the active session
+   */
+  static async syncCurrentSessionBlockedAttempts(req: Request, res: Response) {
+    try {
+      const driverId = DriverController.parseDriverId(req.params.driverId);
+
+      if (!driverId) {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid driver ID',
+        } as ApiResponse);
+      }
+
+      // const payload = SyncBlockedAttemptsSchema.parse(req.body || {});
+
+      const driver = await prisma.driver.findUnique({
+        where: { id: driverId },
+        select: { id: true },
+      });
+
+      if (!driver) {
+        return res.status(404).json({
+          success: false,
+          error: 'Driver not found',
+        } as ApiResponse);
+      }
+
+      const activeSession = await prisma.drivingSession.findFirst({
+        where: {
+          driverId,
+          endedAt: null,
+        },
+        orderBy: {
+          startedAt: 'desc',
+        },
+        select: {
+          id: true,
+          sessionId: true,
+          totalBlockAttempts: true,
+          blockedAttemptAckCount: true,
+          blockedAttemptPerApp: true,
+        },
+      });
+
+      if (!activeSession) {
+        return res.status(404).json({
+          success: false,
+          error: 'No active session found for driver',
+        } as ApiResponse);
+      }
+
+      // const mergedCounts = DriverController.mergeBlockedAttemptCounts(
+      //   activeSession.blockedAttemptPerApp,
+      //   payload.per_app_attempt_records
+      // );
+
+      // const acknowledgedBaseline = Math.max(
+      //   activeSession.blockedAttemptAckCount,
+      //   payload.last_acknowledged_count
+      // );
+      // const maxNewAttemptsFromLocal = Math.max(
+      //   payload.local_total_count - acknowledgedBaseline,
+      //   0
+      // );
+      // const acknowledgedIncrementalCount = Math.min(
+      //   payload.incremental_count,
+      //   maxNewAttemptsFromLocal
+      // );
+
+      // const sessionAttemptCount = Math.max(
+      //   activeSession.totalBlockAttempts + acknowledgedIncrementalCount,
+      //   mergedCounts.total
+      // );
+      // const nextAcknowledgedCount = Math.min(
+      //   sessionAttemptCount,
+      //   Math.max(
+      //     activeSession.blockedAttemptAckCount,
+      //     payload.last_acknowledged_count + acknowledgedIncrementalCount
+      //   )
+      // );
+
+      const updated = req.body.violation_count !== undefined && typeof req.body.violation_count === 'number'
+        ? activeSession.totalBlockAttempts !== req.body.violation_count
+        : false;
+      const sessionAttemptCount = req.body.violation_count ?? activeSession.totalBlockAttempts;
+        
+
+      if (updated) {
+        await prisma.drivingSession.update({
+          where: { id: activeSession.id },
+          data: {
+            totalBlockAttempts: sessionAttemptCount,
+            // blockedAttemptAckCount: nextAcknowledgedCount,
+            // blockedAttemptPerApp: mergedCounts.counts as any,
+            blockedAttemptSyncedAt: new Date(),
+          },
+        });
+      }
+
+      return res.json({
+        success: true,
+        data: {
+          updated,
+          session_attempt_count: sessionAttemptCount,
+          // acknowledged_incremental_count: acknowledgedIncrementalCount,
+          // per_app_attempt_counts: mergedCounts.counts,
+        },
+      } as ApiResponse);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({
+          success: false,
+          error: 'Validation error',
+          data: error.issues,
+        } as ApiResponse);
+      }
+
+      logger.error('Blocked-attempt sync error:', error);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to sync blocked attempts',
+      } as ApiResponse);
+    }
+  }
+
+  /**
+   * GET /api/v1/drivers/:driverId/sessions/current/blocked-attempts
+   * Get authoritative blocked-attempt totals for the active session
+   */
+  static async getCurrentSessionBlockedAttempts(req: Request, res: Response) {
+    try {
+      const driverId = DriverController.parseDriverId(req.params.driverId);
+
+      if (!driverId) {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid driver ID',
+        } as ApiResponse);
+      }
+
+      const driver = await prisma.driver.findUnique({
+        where: { id: driverId },
+        select: { id: true },
+      });
+
+      if (!driver) {
+        return res.status(404).json({
+          success: false,
+          error: 'Driver not found',
+        } as ApiResponse);
+      }
+
+      const activeSession = await prisma.drivingSession.findFirst({
+        where: {
+          driverId,
+          endedAt: null,
+        },
+        orderBy: {
+          startedAt: 'desc',
+        },
+        select: {
+          id: true,
+          sessionId: true,
+          totalBlockAttempts: true,
+          blockedAttemptPerApp: true,
+          blockedAttemptSyncedAt: true,
+        },
+      });
+
+      if (!activeSession) {
+        return res.status(404).json({
+          success: false,
+          error: 'No active session found for driver',
+        } as ApiResponse);
+      }
+
+      return res.json({
+        success: true,
+        data: {
+          session_id: activeSession.sessionId,
+          blocked_attempt_count: activeSession.totalBlockAttempts,
+          per_app_attempt_counts: DriverController.formatBlockedAttemptCounts(
+            activeSession.blockedAttemptPerApp
+          ),
+          synced_at: activeSession.blockedAttemptSyncedAt,
+        },
+      } as ApiResponse);
+    } catch (error) {
+      logger.error('Blocked-attempt fetch error:', error);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to fetch blocked attempts',
+      } as ApiResponse);
+    }
+  }
+
+  /**
+   * PUT /api/v1/drivers/:driverId/allowlist
+   * Store the approved allowlist selection for a driver/device
+   */
+  static async updateAllowlist(req: Request, res: Response) {
+    try {
+      const driverId = DriverController.parseDriverId(req.params.driverId);
+
+      if (!driverId) {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid driver ID',
+        } as ApiResponse);
+      }
+
+      const payload = UpdateAllowlistSchema.parse(req.body || {});
+      const driver = await prisma.driver.findUnique({
+        where: { id: driverId },
+        select: {
+          id: true,
+          deviceId: true,
+        },
+      });
+
+      if (!driver) {
+        return res.status(404).json({
+          success: false,
+          error: 'Driver not found',
+        } as ApiResponse);
+      }
+
+      const deviceId = payload.device_id || driver.deviceId;
+      if (!deviceId) {
+        return res.status(400).json({
+          success: false,
+          error: 'device_id is required when the driver has no stored deviceId',
+        } as ApiResponse);
+      }
+
+      const selectedApps = [...payload.selected_apps].sort((a, b) => {
+        if (a.required_slot === b.required_slot) {
+          return a.token_id.localeCompare(b.token_id);
+        }
+        return a.required_slot.localeCompare(b.required_slot);
+      });
+
+      const selection = await prisma.driverAllowlistSelection.upsert({
+        where: {
+          driverId_deviceId: {
+            driverId,
+            deviceId,
+          },
+        },
+        create: {
+          driverId,
+          deviceId,
+          selectedApps: selectedApps as any,
+        },
+        update: {
+          selectedApps: selectedApps as any,
+        },
+        select: {
+          driverId: true,
+          deviceId: true,
+          selectedApps: true,
+          updatedAt: true,
+        },
+      });
+
+      if (payload.device_id && payload.device_id !== driver.deviceId) {
+        await prisma.driver.update({
+          where: { id: driverId },
+          data: {
+            deviceId: payload.device_id,
+            lastSeenAt: new Date(),
+          },
+        });
+      }
+
+      return res.json({
+        success: true,
+        data: {
+          driver_id: selection.driverId,
+          device_id: selection.deviceId,
+          selected_apps: selection.selectedApps,
+          updated_at: selection.updatedAt,
+        },
+        message: 'Allowlist selection stored',
+      } as ApiResponse);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({
+          success: false,
+          error: 'Validation error',
+          data: error.issues,
+        } as ApiResponse);
+      }
+
+      logger.error('Allowlist update error:', error);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to store allowlist selection',
       } as ApiResponse);
     }
   }

@@ -19,6 +19,14 @@ const nullableIntFromNumberOrString = z.preprocess((value) => {
   return value;
 }, z.number().int().nullable());
 
+const nonnegativeIntFromNumberOrString = z.preprocess((value) => {
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : value;
+  }
+  return value;
+}, z.number().int().nonnegative());
+
 // ═══════════════════════════════════════════════════════════════════════════
 // COMPANY SCHEMAS
 // ═══════════════════════════════════════════════════════════════════════════
@@ -74,6 +82,33 @@ export const UpdatePushTokenSchema = z.object({
 });
 
 export type UpdatePushTokenDTO = z.infer<typeof UpdatePushTokenSchema>;
+
+export const BlockedAttemptRecordSchema = z.object({
+  bundle_id: z.string().trim().min(1, 'bundle_id is required'),
+  application_token_id: z.string().trim().min(1).optional(),
+  attempt_count: nonnegativeIntFromNumberOrString,
+});
+
+export const SyncBlockedAttemptsSchema = z.object({
+  local_total_count: nonnegativeIntFromNumberOrString,
+  last_acknowledged_count: nonnegativeIntFromNumberOrString,
+  incremental_count: nonnegativeIntFromNumberOrString,
+  per_app_attempt_records: z.array(BlockedAttemptRecordSchema).default([]),
+});
+
+export type SyncBlockedAttemptsDTO = z.infer<typeof SyncBlockedAttemptsSchema>;
+
+export const SelectedAllowlistAppSchema = z.object({
+  required_slot: z.string().trim().min(1, 'required_slot is required'),
+  token_id: z.string().trim().min(1, 'token_id is required'),
+});
+
+export const UpdateAllowlistSchema = z.object({
+  device_id: z.string().trim().min(1).optional(),
+  selected_apps: z.array(SelectedAllowlistAppSchema),
+});
+
+export type UpdateAllowlistDTO = z.infer<typeof UpdateAllowlistSchema>;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // API RESPONSE TYPES
