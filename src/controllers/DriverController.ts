@@ -89,6 +89,34 @@ export class DriverController {
     };
   }
 
+  private static formatBlockedAttemptTimestamps(raw: unknown) {
+    if (!Array.isArray(raw)) {
+      return [] as number[];
+    }
+
+    return raw
+      .filter((value): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0)
+      .sort((a, b) => a - b);
+  }
+
+  private static mergeBlockedAttemptTimestamps(existingRaw: unknown, incoming: number[]) {
+    const merged = new Set<number>(DriverController.formatBlockedAttemptTimestamps(existingRaw));
+    const beforeSize = merged.size;
+
+    for (const timestamp of incoming) {
+      if (Number.isFinite(timestamp) && timestamp >= 0) {
+        merged.add(timestamp);
+      }
+    }
+
+    const timestamps = Array.from(merged).sort((a, b) => a - b);
+
+    return {
+      timestamps,
+      changed: merged.size !== beforeSize,
+    };
+  }
+
   private static parseDriverId(rawDriverId: string | string[] | undefined) {
     const normalizedDriverId = Array.isArray(rawDriverId) ? rawDriverId[0] : rawDriverId;
     const driverId = parseInt(normalizedDriverId as string, 10);
@@ -935,7 +963,8 @@ export class DriverController {
         } as ApiResponse);
       }
 
-      // const payload = SyncBlockedAttemptsSchema.parse(req.body || {});
+      const payload = SyncBlockedAttemptsSchema.parse(req.body || {});
+      logger.info('Received blocked-attempt sync payload:', payload);
 
       const driver = await prisma.driver.findUnique({
         where: { id: driverId },
@@ -963,6 +992,7 @@ export class DriverController {
           totalBlockAttempts: true,
           blockedAttemptAckCount: true,
           blockedAttemptPerApp: true,
+          blockedAttemptTimestamps: true,
         },
       });
 
@@ -1016,6 +1046,7 @@ export class DriverController {
             totalBlockAttempts: sessionAttemptCount,
             // blockedAttemptAckCount: nextAcknowledgedCount,
             // blockedAttemptPerApp: mergedCounts.counts as any,
+            blockedAttemptTimestamps: payload.timestamp_list,
             blockedAttemptSyncedAt: new Date(),
           },
         });
@@ -1028,6 +1059,7 @@ export class DriverController {
           session_attempt_count: sessionAttemptCount,
           // acknowledged_incremental_count: acknowledgedIncrementalCount,
           // per_app_attempt_counts: mergedCounts.counts,
+          timestamp_list: payload.timestamp_list,
         },
       } as ApiResponse);
     } catch (error) {
@@ -1087,6 +1119,7 @@ export class DriverController {
           sessionId: true,
           totalBlockAttempts: true,
           blockedAttemptPerApp: true,
+          blockedAttemptTimestamps: true,
           blockedAttemptSyncedAt: true,
         },
       });
@@ -1105,6 +1138,9 @@ export class DriverController {
           blocked_attempt_count: activeSession.totalBlockAttempts,
           per_app_attempt_counts: DriverController.formatBlockedAttemptCounts(
             activeSession.blockedAttemptPerApp
+          ),
+          timestamp_list: DriverController.formatBlockedAttemptTimestamps(
+            activeSession.blockedAttemptTimestamps
           ),
           synced_at: activeSession.blockedAttemptSyncedAt,
         },

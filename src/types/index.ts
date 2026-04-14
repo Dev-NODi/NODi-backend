@@ -27,6 +27,14 @@ const nonnegativeIntFromNumberOrString = z.preprocess((value) => {
   return value;
 }, z.number().int().nonnegative());
 
+const nonnegativeNumberFromNumberOrString = z.preprocess((value) => {
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : value;
+  }
+  return value;
+}, z.number().nonnegative());
+
 // ═══════════════════════════════════════════════════════════════════════════
 // COMPANY SCHEMAS
 // ═══════════════════════════════════════════════════════════════════════════
@@ -90,10 +98,13 @@ export const BlockedAttemptRecordSchema = z.object({
 });
 
 export const SyncBlockedAttemptsSchema = z.object({
-  local_total_count: nonnegativeIntFromNumberOrString,
-  last_acknowledged_count: nonnegativeIntFromNumberOrString,
-  incremental_count: nonnegativeIntFromNumberOrString,
+  local_total_count: nonnegativeIntFromNumberOrString.optional(),
+  last_acknowledged_count: nonnegativeIntFromNumberOrString.optional(),
+  incremental_count: nonnegativeIntFromNumberOrString.optional(),
   per_app_attempt_records: z.array(BlockedAttemptRecordSchema).default([]),
+  violation_count: nonnegativeIntFromNumberOrString.optional(),
+  timestamp: nonnegativeNumberFromNumberOrString.optional(),
+  timestamp_list: z.array(nonnegativeNumberFromNumberOrString).default([]),
 });
 
 export type SyncBlockedAttemptsDTO = z.infer<typeof SyncBlockedAttemptsSchema>;
