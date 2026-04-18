@@ -141,6 +141,10 @@ model DrivingSession {
   blockedAttemptPerApp Json? @map("blocked_attempt_per_app")
   blockedAttemptTimestamps Json? @map("blocked_attempt_timestamps")
   blockedAttemptSyncedAt DateTime? @map("blocked_attempt_synced_at")
+  lastHeartbeatSentAt DateTime? @map("last_heartbeat_sent_at")
+  lastHeartbeatAckAt DateTime? @map("last_heartbeat_ack_at")
+  missedHeartbeatCount Int @default(0) @map("missed_heartbeat_count")
+  heartbeatCommandId String? @map("heartbeat_command_id")
 
   // Tamper detection
   isTampered     Boolean?  @default(false) @map("is_tampered")

@@ -207,6 +207,12 @@ export class DriverController {
           startedAt: true,
           updatedAt: true,
           totalBlockAttempts: true,
+          isTampered: true,
+          tamperedAt: true,
+          tamperedReason: true,
+          lastHeartbeatSentAt: true,
+          lastHeartbeatAckAt: true,
+          missedHeartbeatCount: true,
         },
       });
 
@@ -272,6 +278,12 @@ export class DriverController {
                 lastAckAt: activeSession.lastAckAt,
                 lastAckReason: activeSession.lastAckReason,
                 blocked_attempt_count: activeSession.totalBlockAttempts,
+                is_tampered: activeSession.isTampered,
+                tampered_at: activeSession.tamperedAt,
+                tampered_reason: activeSession.tamperedReason,
+                last_heartbeat_sent_at: activeSession.lastHeartbeatSentAt,
+                last_heartbeat_ack_at: activeSession.lastHeartbeatAckAt,
+                missed_heartbeat_count: activeSession.missedHeartbeatCount,
               }
             : null,
           sync: {
@@ -944,6 +956,92 @@ export class DriverController {
       return res.status(500).json({
         success: false,
         error: 'Failed to store push command ACK',
+      } as ApiResponse);
+    }
+  }
+
+  /**
+   * POST /api/v1/drivers/heartbeat-ack
+   * Receive app ACK for hourly heartbeat notifications
+   */
+  static async heartbeatAck(req: Request, res: Response) {
+    try {
+      const ackSchema = z.object({
+        commandId: z.string().min(1),
+        driverId: z.number().int().positive(),
+        sessionId: z.string().optional(),
+        deviceId: z.string().optional(),
+        timestamp: z.string().optional(),
+        source: z.string().optional(),
+        app_state: z.enum(['foreground', 'background', 'unknown']).optional(),
+        blocking_active: z.boolean().optional(),
+      });
+
+      const ack = ackSchema.parse(req.body || {});
+      const ackTimestamp = ack.timestamp ? new Date(ack.timestamp) : new Date();
+
+      const command = await prisma.pushCommand.findUnique({
+        where: { commandId: ack.commandId },
+        select: {
+          commandId: true,
+          driverId: true,
+          sessionId: true,
+          source: true,
+        },
+      });
+
+      if (!command || command.driverId !== ack.driverId || command.source !== 'heartbeat') {
+        return res.status(404).json({
+          success: false,
+          error: 'Heartbeat command not found',
+        } as ApiResponse);
+      }
+
+      await prisma.pushCommand.update({
+        where: { commandId: ack.commandId },
+        data: {
+          ackApplied: true,
+          ackSource: ack.source || 'app_heartbeat',
+          ackTimestamp,
+          ackDeviceId: ack.deviceId,
+          rawAck: ack as any,
+        },
+      });
+
+      if (command.sessionId) {
+        await prisma.drivingSession.update({
+          where: { id: command.sessionId },
+          data: {
+            lastHeartbeatAckAt: ackTimestamp,
+            missedHeartbeatCount: 0,
+            heartbeatCommandId: null,
+          },
+        });
+      }
+
+      return res.json({
+        success: true,
+        data: {
+          command_id: ack.commandId,
+          driver_id: ack.driverId,
+          heartbeat_acknowledged_at: ackTimestamp,
+          session_id: ack.sessionId || null,
+        },
+        message: 'Heartbeat ACK stored',
+      } as ApiResponse);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({
+          success: false,
+          error: 'Validation error',
+          data: error.issues,
+        } as ApiResponse);
+      }
+
+      logger.error('Heartbeat ACK error:', error);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to store heartbeat ACK',
       } as ApiResponse);
     }
   }

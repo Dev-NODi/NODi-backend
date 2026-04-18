@@ -6,6 +6,7 @@ const router = Router();
 router.post('/register', DriverController.register);
 router.post('/push-token', DriverController.updatePushToken);
 router.post('/push-command-ack', DriverController.pushCommandAck);
+router.post('/heartbeat-ack', DriverController.heartbeatAck);
 router.post('/:driverId/sessions/current/blocked-attempts/sync', DriverController.syncCurrentSessionBlockedAttempts);
 router.post('/:id/test-push', DriverController.testPush);
 router.post('/:id/test-silent-apns', DriverController.testSilentApnsPush);

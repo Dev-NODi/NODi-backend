@@ -383,6 +383,81 @@ class PushNotificationService {
       'duty_status_change'
     );
   }
+
+  async sendHeartbeat(
+    driverId: number,
+    sessionId: number,
+    sessionKey: string,
+    blockingActive: boolean,
+    dutyStatus: string
+  ): Promise<{
+    success: boolean;
+    pushSent: boolean;
+    commandId: string;
+    messageId?: string;
+    pushError?: string;
+  }> {
+    const driver = await prisma.driver.findUnique({
+      where: { id: driverId },
+      select: {
+        id: true,
+        fcmToken: true,
+      },
+    });
+
+    const commandId = this.createCommandId(driverId);
+
+    await prisma.pushCommand.create({
+      data: {
+        commandId,
+        driverId,
+        sessionId,
+        requestedAction: 'heartbeat',
+        shouldBlock: blockingActive,
+        dutyStatus,
+        source: 'heartbeat',
+      },
+    });
+
+    if (!driver?.fcmToken) {
+      return {
+        success: false,
+        pushSent: false,
+        commandId,
+        pushError: 'Driver has no FCM token',
+      };
+    }
+
+    const apnsResult = await this.sendRawApnsBackgroundPush(driver.fcmToken, {
+      type: 'heartbeat',
+      action: blockingActive ? 'block' : 'unblock',
+      dutyStatus,
+      commandId,
+    });
+
+    await prisma.pushCommand.update({
+      where: { commandId },
+      data: {
+        pushSent: apnsResult.success,
+        sentAt: new Date(),
+        rawAck: {
+          type: 'heartbeat',
+          session_id: sessionKey,
+          duty_status: dutyStatus,
+          blocking_active: blockingActive,
+          sent_at: new Date().toISOString(),
+        } as any,
+      },
+    });
+
+    return {
+      success: apnsResult.success,
+      pushSent: apnsResult.success,
+      commandId,
+      messageId: apnsResult.messageId,
+      pushError: apnsResult.error,
+    };
+  }
 }
 
 export default new PushNotificationService();
