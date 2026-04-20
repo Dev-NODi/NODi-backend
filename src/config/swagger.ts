@@ -35,6 +35,10 @@ export const swaggerDocument = {
             name: 'Sessions',
             description: 'Driving session management',
         },
+        {
+            name: 'Fleet',
+            description: 'Fleet manager auth (Firebase ID token)',
+        },
     ],
     paths: {
         '/api/v1/auth/register': {
@@ -113,6 +117,203 @@ export const swaggerDocument = {
                     },
                     400: {
                         description: 'Validation error',
+                    },
+                },
+            },
+        },
+        '/api/v1/fleet/me': {
+            get: {
+                tags: ['Fleet'],
+                summary: 'Current fleet manager (Firebase)',
+                description:
+                    'Send Authorization: Bearer with a Firebase Auth ID token. A row in fleet_managers must match firebase_uid. Response includes `companyName` and `contactNumber` for fleet profile / driver lock screen.',
+                security: [{ bearerAuth: [] }],
+                responses: {
+                    200: {
+                        description: 'Fleet manager profile and company assignments',
+                    },
+                    401: {
+                        description: 'Missing, invalid, or expired Firebase token',
+                    },
+                    403: {
+                        description: 'No fleet_managers row for this Firebase UID',
+                    },
+                    503: {
+                        description: 'Firebase Admin not configured',
+                    },
+                },
+            },
+        },
+        '/api/v1/fleet/me/profile': {
+            patch: {
+                tags: ['Fleet'],
+                summary: 'Update fleet manager profile (name, company label, dispatch number)',
+                description:
+                    'Updates `fleet_managers.name`, `company_name`, and `contact_number`. Send at least one field; JSON `null` clears an optional string.',
+                security: [{ bearerAuth: [] }],
+                requestBody: {
+                    required: true,
+                    content: {
+                        'application/json': {
+                            schema: {
+                                type: 'object',
+                                properties: {
+                                    name: { type: 'string', nullable: true },
+                                    companyName: { type: 'string', nullable: true },
+                                    contactNumber: { type: 'string', nullable: true },
+                                },
+                            },
+                        },
+                    },
+                },
+                responses: {
+                    200: { description: 'Same shape as GET /fleet/me' },
+                    400: { description: 'Validation error' },
+                    401: { description: 'Invalid or missing Firebase token' },
+                    403: { description: 'Not an active fleet manager' },
+                    503: { description: 'Firebase Admin not configured' },
+                },
+            },
+        },
+        '/api/v1/fleet/live-locations': {
+            get: {
+                tags: ['Fleet'],
+                summary: 'Live driver locations (Motive)',
+                description:
+                    'Fleet managers only. Firebase Bearer. Enriches from available_time (duty + vehicle id for speed) and vehicle_locations for speedMph. Each item includes speedMph (number or null) when speed enrichment is on; null means Motive did not report a numeric speed for that driver/vehicle. lean=1 = driver_locations only.',
+                security: [{ bearerAuth: [] }],
+                parameters: [
+                    {
+                        name: 'lean',
+                        in: 'query',
+                        schema: { type: 'string', enum: ['0', '1', 'true', 'false'] },
+                        description: 'If 1/true: skip duty and speed Motive calls (map-only, faster).',
+                    },
+                    {
+                        name: 'duty',
+                        in: 'query',
+                        schema: { type: 'string', enum: ['0', '1', 'true', 'false'] },
+                        description: 'If 0/false: omit available_time / dutyStatus.',
+                    },
+                    {
+                        name: 'speed',
+                        in: 'query',
+                        schema: { type: 'string', enum: ['0', '1', 'true', 'false'] },
+                        description:
+                            'If 0/false: skip vehicle_locations calls; speedMph is omitted from items.',
+                    },
+                ],
+                responses: {
+                    200: {
+                        description: 'List of live driver location points',
+                    },
+                    401: {
+                        description: 'Invalid or missing Firebase token',
+                    },
+                    403: {
+                        description: 'User is not an active fleet manager',
+                    },
+                    502: {
+                        description: 'Motive API error',
+                    },
+                    503: {
+                        description: 'Motive API key not configured',
+                    },
+                },
+            },
+        },
+        '/api/v1/fleet/dashboard': {
+            get: {
+                tags: ['Fleet'],
+                summary: 'Fleet dashboard snapshot',
+                description:
+                    'Firebase Bearer (fleet manager). Returns `stats` (active driver count as `activeVehicles`, open sessions with blocking requested+applied as `currentlyLocked`, `tamperAlertsToday` = count of sessions with `is_tampered` and `tampered_at` on the current US Eastern calendar day), `safety.score` as the fleet average of per-session scores (100 − 2×`total_block_attempts`, min 50) over `driving_sessions` in the last-30-day window (started or ended in the window, or still open; 100 if none), and `activity` as a merged feed of recent tamper events (`tampered_at`, `tampered_reason`) and recent unlock-attempt sessions (`total_block_attempts` > 0), newest first.',
+                security: [{ bearerAuth: [] }],
+                responses: {
+                    200: {
+                        description: '{ success, data: { stats, safety, activity } }',
+                    },
+                    401: {
+                        description: 'Invalid or missing Firebase token',
+                    },
+                    403: {
+                        description: 'User is not an active fleet manager',
+                    },
+                },
+            },
+        },
+        '/api/v1/fleet/violations': {
+            get: {
+                tags: ['Fleet'],
+                summary: 'Fleet violations (driving sessions with block attempts)',
+                description:
+                    'Firebase Bearer (fleet manager). Returns `driving_sessions` where `total_block_attempts` > 0 or tampered, with driver name, `started_at`/`ended_at` as ISO UTC, `tampered_at` as `tamperedAtUtc` when set, `blockedAttemptAtUtc` from `blocked_attempt_timestamps`, `vehicle_number` as Motive `vehicle.number` when available from live driver-locations, otherwise from `GET /v1/vehicle_locations/:vehicleId` using the session `vehicle_id`, and blocking snapshot fields. Not filtered by company.',
+                security: [{ bearerAuth: [] }],
+                responses: {
+                    200: {
+                        description: '{ success, data: { violations: [...] } }',
+                    },
+                    401: {
+                        description: 'Invalid or missing Firebase token',
+                    },
+                    403: {
+                        description: 'User is not an active fleet manager',
+                    },
+                },
+            },
+        },
+        '/api/v1/fleet/drivers': {
+            get: {
+                tags: ['Fleet'],
+                summary: 'Fleet driver roster',
+                description:
+                    'Firebase Bearer (fleet manager). Returns all active `drivers` rows (`name` from DB); each row includes `truckId` as Motive `vehicle.number` when present on live driver-locations for that Motive driver id, otherwise resolved from `GET /v1/vehicle_locations/:vehicleId` for the active or latest-session vehicle id, otherwise the raw Motive vehicle id string. Also `safetyScore` (average per-session score over `driving_sessions` in the rolling 30-day window: 100 − 2×`total_block_attempts` per session, min 50), `totalBlockAttempts` (sum of attempts across those windowed sessions), and `dutyStatus` (webhook fallback). Fleet UI merges `dutyStatus` from Motive live-locations when that snapshot includes the driver. Not filtered by company.',
+                security: [{ bearerAuth: [] }],
+                responses: {
+                    200: {
+                        description: '{ success, data: { drivers: [...] } }',
+                    },
+                    401: {
+                        description: 'Invalid or missing Firebase token',
+                    },
+                    403: {
+                        description: 'User is not an active fleet manager',
+                    },
+                },
+            },
+        },
+        '/api/v1/fleet/drivers/{driverId}': {
+            get: {
+                tags: ['Fleet'],
+                summary: 'Fleet driver detail (session + distraction timeline)',
+                description:
+                    'Firebase Bearer (fleet manager). Returns `drivers` plus active/latest `driving_sessions` (any company), push-command spikes, `safetyScore` (same 30-day average as the drivers list, then minus 5 points per session with `is_tampered` in that window, floored at 50), `totalBlockAttempts` (same window as list), `sessionTimelines`: recent sessions (newest first, up to 35), and `truckId` as Motive `vehicle.number` for the active session vehicle when resolvable from Motive APIs (else numeric vehicle id). Path id is internal `drivers.id` or `motive_driver_id`. Not filtered by company.',
+                security: [{ bearerAuth: [] }],
+                parameters: [
+                    {
+                        name: 'driverId',
+                        in: 'path',
+                        required: true,
+                        schema: { type: 'integer', minimum: 1 },
+                        description:
+                            'Internal `drivers.id` or Motive `drivers.motive_driver_id` (UI often uses the latter from live-locations).',
+                    },
+                ],
+                responses: {
+                    200: {
+                        description: 'Driver detail payload',
+                    },
+                    400: {
+                        description: 'Invalid driver id',
+                    },
+                    401: {
+                        description: 'Invalid or missing Firebase token',
+                    },
+                    403: {
+                        description: 'User is not an active fleet manager',
+                    },
+                    404: {
+                        description: 'Driver not found',
                     },
                 },
             },
@@ -505,7 +706,8 @@ export const swaggerDocument = {
                 },
             },
         },
-    }, '/api/v1/sessions/active': {
+    },
+    '/api/v1/sessions/active': {
         get: {
             tags: ['Sessions'],
             summary: 'Get all active sessions',
@@ -606,5 +808,14 @@ export const swaggerDocument = {
         },
     },
     },
-    
+    components: {
+        securitySchemes: {
+            bearerAuth: {
+                type: 'http',
+                scheme: 'bearer',
+                bearerFormat: 'JWT',
+                description: 'Firebase Auth ID token',
+            },
+        },
+    },
 };

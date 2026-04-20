@@ -1,7 +1,9 @@
+import './config/loadEnv';
+import './types/express';
 import express, { Request, Response } from 'express';
+import compression from 'compression';
 import cors from 'cors';
 import helmet from 'helmet';
-import dotenv from 'dotenv';
 import swaggerUi from 'swagger-ui-express';
 import logger from './config/logger';
 import redis from './config/redis';
@@ -11,8 +13,6 @@ import routes from './routes';
 import { swaggerDocument } from './config/swagger';
 import { initializeFirebase } from './config/firebase';
 
-// Load environment variables
-dotenv.config();
 initializeFirebase();
 
 const app = express();
@@ -20,6 +20,7 @@ const PORT = process.env.PORT || 3000;
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
 app.use(helmet());
+app.use(compression());
 app.use(cors());
 app.use(express.json());
 app.use(express.text({ type: '*/*' }));
