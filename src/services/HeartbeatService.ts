@@ -2,7 +2,7 @@ import prisma from '../config/database';
 import logger from '../config/logger';
 import PushNotificationService from './PushNotificationService';
 
-const HEARTBEAT_INTERVAL_MS = 60 * 60 * 1000;
+const HEARTBEAT_INTERVAL_MS = 2 * 60 * 1000;
 const HEARTBEAT_POLL_MS = 60 * 1000;
 
 class HeartbeatService {

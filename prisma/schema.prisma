@@ -62,6 +62,7 @@ model Driver {
   devicePlatform     String?   @map("device_platform")
   fcmToken           String?   @map("fcm_token") @db.Text
   fcmTokenUpdatedAt  DateTime? @map("fcm_token_updated_at")
+  allowlistSelectionEnabled Boolean @default(false) @map("allowlist_selection_enabled")
 
   isActive   Boolean   @default(true) @map("is_active")
   lastSeenAt DateTime? @map("last_seen_at")

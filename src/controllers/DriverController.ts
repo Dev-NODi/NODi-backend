@@ -9,6 +9,7 @@ import {
   UpdatePushTokenSchema,
   SyncBlockedAttemptsSchema,
   UpdateAllowlistSchema,
+  UpdateAllowlistSelectionAccessSchema,
   ApiResponse,
 } from '../types';
 
@@ -175,6 +176,7 @@ export class DriverController {
           email: true,
           fleetManagerPhone: true,
           lastSeenAt: true,
+          allowlistSelectionEnabled: true,
         },
       });
 
@@ -259,6 +261,7 @@ export class DriverController {
             email: driver.email,
             fleet_manager_phone: driver.fleetManagerPhone,
             lastSeenAt: driver.lastSeenAt,
+            allowlist_selection_allowed: driver.allowlistSelectionEnabled,
           },
           dutyStatus: {
             current: currentDutyStatus,
@@ -291,6 +294,9 @@ export class DriverController {
             appAppliedBlocking: appliedBlocking,
             inSync: syncState === 'synced',
             syncState,
+          },
+          allowlistSelection: {
+            allowed: driver.allowlistSelectionEnabled,
           },
         },
       } as ApiResponse);
@@ -1253,6 +1259,123 @@ export class DriverController {
   }
 
   /**
+   * PATCH /api/v1/drivers/:driverId/allowlist-selection-access
+   * Server-controlled toggle for whether the driver may submit a new allowlist selection
+   */
+  static async updateAllowlistSelectionAccess(req: Request, res: Response) {
+    try {
+      const driverId = DriverController.parseDriverId(req.params.driverId);
+
+      if (!driverId) {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid driver ID',
+        } as ApiResponse);
+      }
+
+      const payload = UpdateAllowlistSelectionAccessSchema.parse(req.body || {});
+
+      const existingDriver = await prisma.driver.findUnique({
+        where: { id: driverId },
+        select: {
+          id: true,
+        },
+      });
+
+      if (!existingDriver) {
+        return res.status(404).json({
+          success: false,
+          error: 'Driver not found',
+        } as ApiResponse);
+      }
+
+      const driver = await prisma.driver.update({
+        where: { id: driverId },
+        data: {
+          allowlistSelectionEnabled: payload.allowed,
+        },
+        select: {
+          id: true,
+          allowlistSelectionEnabled: true,
+          updatedAt: true,
+        },
+      });
+
+      return res.json({
+        success: true,
+        data: {
+          driver_id: driver.id,
+          allowlist_selection_allowed: driver.allowlistSelectionEnabled,
+          updated_at: driver.updatedAt,
+        },
+        message: `Allowlist selection access ${driver.allowlistSelectionEnabled ? 'enabled' : 'disabled'}`,
+      } as ApiResponse);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({
+          success: false,
+          error: 'Validation error',
+          data: error.issues,
+        } as ApiResponse);
+      }
+
+      logger.error('Allowlist selection access update error:', error);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to update allowlist selection access',
+      } as ApiResponse);
+    }
+  }
+
+  /**
+   * GET /api/v1/drivers/:driverId/allowlist-selection-access
+   * Get whether the driver is currently allowed to submit a new allowlist selection
+   */
+  static async getAllowlistSelectionAccess(req: Request, res: Response) {
+    try {
+      const driverId = DriverController.parseDriverId(req.params.driverId);
+
+      if (!driverId) {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid driver ID',
+        } as ApiResponse);
+      }
+
+      const driver = await prisma.driver.findUnique({
+        where: { id: driverId },
+        select: {
+          id: true,
+          allowlistSelectionEnabled: true,
+          updatedAt: true,
+        },
+      });
+
+      if (!driver) {
+        return res.status(404).json({
+          success: false,
+          error: 'Driver not found',
+        } as ApiResponse);
+      }
+
+      return res.json({
+        success: true,
+        data: {
+          driver_id: driver.id,
+          allowlist_selection_allowed: driver.allowlistSelectionEnabled,
+          updated_at: driver.updatedAt,
+        },
+      } as ApiResponse);
+    } catch (error) {
+      logger.error('Allowlist selection access fetch error:', error);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to fetch allowlist selection access',
+      } as ApiResponse);
+    }
+  }
+
+  /**
    * PUT /api/v1/drivers/:driverId/allowlist
    * Store the approved allowlist selection for a driver/device
    */
@@ -1273,6 +1396,7 @@ export class DriverController {
         select: {
           id: true,
           deviceId: true,
+          allowlistSelectionEnabled: true,
         },
       });
 
@@ -1280,6 +1404,13 @@ export class DriverController {
         return res.status(404).json({
           success: false,
           error: 'Driver not found',
+        } as ApiResponse);
+      }
+
+      if (!driver.allowlistSelectionEnabled) {
+        return res.status(403).json({
+          success: false,
+          error: 'Allowlist selection is not currently allowed for this driver',
         } as ApiResponse);
       }
 
@@ -1298,38 +1429,45 @@ export class DriverController {
         return a.required_slot.localeCompare(b.required_slot);
       });
 
-      const selection = await prisma.driverAllowlistSelection.upsert({
-        where: {
-          driverId_deviceId: {
+      const selection = await prisma.$transaction(async (tx) => {
+        const savedSelection = await tx.driverAllowlistSelection.upsert({
+          where: {
+            driverId_deviceId: {
+              driverId,
+              deviceId,
+            },
+          },
+          create: {
             driverId,
             deviceId,
+            selectedApps: selectedApps as any,
           },
-        },
-        create: {
-          driverId,
-          deviceId,
-          selectedApps: selectedApps as any,
-        },
-        update: {
-          selectedApps: selectedApps as any,
-        },
-        select: {
-          driverId: true,
-          deviceId: true,
-          selectedApps: true,
-          updatedAt: true,
-        },
-      });
-
-      if (payload.device_id && payload.device_id !== driver.deviceId) {
-        await prisma.driver.update({
-          where: { id: driverId },
-          data: {
-            deviceId: payload.device_id,
-            lastSeenAt: new Date(),
+          update: {
+            selectedApps: selectedApps as any,
+          },
+          select: {
+            driverId: true,
+            deviceId: true,
+            selectedApps: true,
+            updatedAt: true,
           },
         });
-      }
+
+        await tx.driver.update({
+          where: { id: driverId },
+          data: {
+            allowlistSelectionEnabled: false,
+            ...(payload.device_id && payload.device_id !== driver.deviceId
+              ? {
+                  deviceId: payload.device_id,
+                  lastSeenAt: new Date(),
+                }
+              : {}),
+          },
+        });
+
+        return savedSelection;
+      });
 
       return res.json({
         success: true,
@@ -1338,8 +1476,9 @@ export class DriverController {
           device_id: selection.deviceId,
           selected_apps: selection.selectedApps,
           updated_at: selection.updatedAt,
+          allowlist_selection_allowed: false,
         },
-        message: 'Allowlist selection stored',
+        message: 'Allowlist selection stored and access disabled',
       } as ApiResponse);
     } catch (error) {
       if (error instanceof z.ZodError) {
@@ -1354,6 +1493,82 @@ export class DriverController {
       return res.status(500).json({
         success: false,
         error: 'Failed to store allowlist selection',
+      } as ApiResponse);
+    }
+  }
+
+  /**
+   * GET /api/v1/drivers/:driverId/allowlist/:deviceId
+   * Get the approved allowlist selection for a driver/device
+   */
+  static async getAllowlist(req: Request, res: Response) {
+    try {
+      const driverId = DriverController.parseDriverId(req.params.driverId);
+
+      if (!driverId) {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid driver ID',
+        } as ApiResponse);
+      }
+
+      const rawDeviceId = req.params.deviceId;
+      const deviceId = (Array.isArray(rawDeviceId) ? rawDeviceId[0] : rawDeviceId || '').trim();
+      if (!deviceId) {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid device ID',
+        } as ApiResponse);
+      }
+
+      const driver = await prisma.driver.findUnique({
+        where: { id: driverId },
+        select: { id: true },
+      });
+
+      if (!driver) {
+        return res.status(404).json({
+          success: false,
+          error: 'Driver not found',
+        } as ApiResponse);
+      }
+
+      const selection = await prisma.driverAllowlistSelection.findUnique({
+        where: {
+          driverId_deviceId: {
+            driverId,
+            deviceId,
+          },
+        },
+        select: {
+          driverId: true,
+          deviceId: true,
+          selectedApps: true,
+          updatedAt: true,
+        },
+      });
+
+      if (!selection) {
+        return res.status(404).json({
+          success: false,
+          error: 'Allowlist selection not found for driver/device',
+        } as ApiResponse);
+      }
+
+      return res.json({
+        success: true,
+        data: {
+          driver_id: selection.driverId,
+          device_id: selection.deviceId,
+          selected_apps: selection.selectedApps,
+          updated_at: selection.updatedAt,
+        },
+      } as ApiResponse);
+    } catch (error) {
+      logger.error('Allowlist fetch error:', error);
+      return res.status(500).json({
+        success: false,
+        error: 'Failed to fetch allowlist selection',
       } as ApiResponse);
     }
   }

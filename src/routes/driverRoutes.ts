@@ -11,7 +11,10 @@ router.post('/:driverId/sessions/current/blocked-attempts/sync', DriverControlle
 router.post('/:id/test-push', DriverController.testPush);
 router.post('/:id/test-silent-apns', DriverController.testSilentApnsPush);
 router.post('/:id/assign', DriverController.assignToCompany);
+router.patch('/:driverId/allowlist-selection-access', DriverController.updateAllowlistSelectionAccess);
 router.put('/:driverId/allowlist', DriverController.updateAllowlist);
+router.get('/:driverId/allowlist-selection-access', DriverController.getAllowlistSelectionAccess);
+router.get('/:driverId/allowlist/:deviceId', DriverController.getAllowlist);
 router.get('/:id/duty-status', DriverController.getCurrentDutyStatus);
 router.get('/:driverId/sessions/current/blocked-attempts', DriverController.getCurrentSessionBlockedAttempts);
 router.get('/', DriverController.list);

@@ -121,6 +121,12 @@ export const UpdateAllowlistSchema = z.object({
 
 export type UpdateAllowlistDTO = z.infer<typeof UpdateAllowlistSchema>;
 
+export const UpdateAllowlistSelectionAccessSchema = z.object({
+  allowed: z.boolean(),
+});
+
+export type UpdateAllowlistSelectionAccessDTO = z.infer<typeof UpdateAllowlistSelectionAccessSchema>;
+
 // ═══════════════════════════════════════════════════════════════════════════
 // API RESPONSE TYPES
 // ═══════════════════════════════════════════════════════════════════════════
