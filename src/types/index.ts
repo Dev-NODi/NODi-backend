@@ -19,6 +19,22 @@ const nullableIntFromNumberOrString = z.preprocess((value) => {
   return value;
 }, z.number().int().nullable());
 
+const nonnegativeIntFromNumberOrString = z.preprocess((value) => {
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : value;
+  }
+  return value;
+}, z.number().int().nonnegative());
+
+const nonnegativeNumberFromNumberOrString = z.preprocess((value) => {
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : value;
+  }
+  return value;
+}, z.number().nonnegative());
+
 // ═══════════════════════════════════════════════════════════════════════════
 // COMPANY SCHEMAS
 // ═══════════════════════════════════════════════════════════════════════════
@@ -74,6 +90,42 @@ export const UpdatePushTokenSchema = z.object({
 });
 
 export type UpdatePushTokenDTO = z.infer<typeof UpdatePushTokenSchema>;
+
+export const BlockedAttemptRecordSchema = z.object({
+  bundle_id: z.string().trim().min(1, 'bundle_id is required'),
+  application_token_id: z.string().trim().min(1).optional(),
+  attempt_count: nonnegativeIntFromNumberOrString,
+});
+
+export const SyncBlockedAttemptsSchema = z.object({
+  local_total_count: nonnegativeIntFromNumberOrString.optional(),
+  last_acknowledged_count: nonnegativeIntFromNumberOrString.optional(),
+  incremental_count: nonnegativeIntFromNumberOrString.optional(),
+  per_app_attempt_records: z.array(BlockedAttemptRecordSchema).default([]),
+  violation_count: nonnegativeIntFromNumberOrString.optional(),
+  timestamp: nonnegativeNumberFromNumberOrString.optional(),
+  timestamp_list: z.array(nonnegativeNumberFromNumberOrString).default([]),
+});
+
+export type SyncBlockedAttemptsDTO = z.infer<typeof SyncBlockedAttemptsSchema>;
+
+export const SelectedAllowlistAppSchema = z.object({
+  required_slot: z.string().trim().min(1, 'required_slot is required'),
+  token_id: z.string().trim().min(1, 'token_id is required'),
+});
+
+export const UpdateAllowlistSchema = z.object({
+  device_id: z.string().trim().min(1).optional(),
+  selected_apps: z.array(SelectedAllowlistAppSchema),
+});
+
+export type UpdateAllowlistDTO = z.infer<typeof UpdateAllowlistSchema>;
+
+export const UpdateAllowlistSelectionAccessSchema = z.object({
+  allowed: z.boolean(),
+});
+
+export type UpdateAllowlistSelectionAccessDTO = z.infer<typeof UpdateAllowlistSelectionAccessSchema>;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // API RESPONSE TYPES

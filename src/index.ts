@@ -12,6 +12,7 @@ import { errorHandler } from './middleware/errorHandler';
 import routes from './routes';
 import { swaggerDocument } from './config/swagger';
 import { initializeFirebase } from './config/firebase';
+import HeartbeatService from './services/HeartbeatService';
 
 initializeFirebase();
 
@@ -116,6 +117,7 @@ const server = app.listen(PORT, () => {
   logger.info(`📚 API Docs: http://localhost:${PORT}/api-docs`);
   logger.info(`🔗 API Base: http://localhost:${PORT}/api/v1`);
   logger.info('');
+  // HeartbeatService.start();
 });
 
 // ─── Graceful Shutdown ────────────────────────────────────────────────────────
@@ -126,6 +128,7 @@ const gracefulShutdown = async (signal: string) => {
     logger.info('✅ HTTP server closed');
 
     try {
+      HeartbeatService.stop();
       await prisma.$disconnect();
       logger.info('✅ PostgreSQL disconnected');
     } catch (err) {

@@ -54,6 +54,7 @@ model Driver {
   email        String? @unique
   passwordHash String? @map("password_hash")
   name         String?
+  fleetManagerPhone String? @map("fleet_manager_phone")
 
   motiveDriverId Int? @map("motive_driver_id")
 
@@ -62,6 +63,7 @@ model Driver {
   devicePlatform     String?   @map("device_platform")
   fcmToken           String?   @map("fcm_token") @db.Text
   fcmTokenUpdatedAt  DateTime? @map("fcm_token_updated_at")
+  allowlistSelectionEnabled Boolean @default(false) @map("allowlist_selection_enabled")
 
   isActive   Boolean   @default(true) @map("is_active")
   lastSeenAt DateTime? @map("last_seen_at")
@@ -72,6 +74,7 @@ model Driver {
   companies DriverCompanyAssignment[]
   sessions  DrivingSession[]
   pushCommands PushCommand[]
+  allowlistSelections DriverAllowlistSelection[]
 
   @@index([phone])
   @@index([email])
@@ -136,6 +139,14 @@ model DrivingSession {
 
   // Metrics
   totalBlockAttempts Int @default(0) @map("total_block_attempts")
+  blockedAttemptAckCount Int @default(0) @map("blocked_attempt_ack_count")
+  blockedAttemptPerApp Json? @map("blocked_attempt_per_app")
+  blockedAttemptTimestamps Json? @map("blocked_attempt_timestamps")
+  blockedAttemptSyncedAt DateTime? @map("blocked_attempt_synced_at")
+  lastHeartbeatSentAt DateTime? @map("last_heartbeat_sent_at")
+  lastHeartbeatAckAt DateTime? @map("last_heartbeat_ack_at")
+  missedHeartbeatCount Int @default(0) @map("missed_heartbeat_count")
+  heartbeatCommandId String? @map("heartbeat_command_id")
 
   // Tamper detection
   isTampered     Boolean?  @default(false) @map("is_tampered")
@@ -158,6 +169,23 @@ model DrivingSession {
   @@index([companyId, endedAt])
   @@index([sessionId])
   @@map("driving_sessions")
+}
+
+model DriverAllowlistSelection {
+  id Int @id @default(autoincrement())
+
+  driverId Int @map("driver_id")
+  deviceId String @map("device_id")
+  selectedApps Json @map("selected_apps")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  driver Driver @relation(fields: [driverId], references: [id], onDelete: Cascade)
+
+  @@unique([driverId, deviceId])
+  @@index([driverId])
+  @@map("driver_allowlist_selections")
 }
 
 model PushCommand {

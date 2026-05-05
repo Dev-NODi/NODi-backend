@@ -19,6 +19,82 @@ class PushNotificationService {
     return `cmd-${Date.now()}-${driverId}-${Math.random().toString(36).slice(2, 8)}`;
   }
 
+  async sendRawApnsBackgroundPush(
+    fcmToken: string,
+    payload: {
+      type: string;
+      action: 'block' | 'unblock';
+      dutyStatus: string;
+      commandId: string;
+      apnsTopic?: string;
+    }
+  ): Promise<{ success: boolean; messageId?: string; error?: string }> {
+    if (!isFirebaseInitialized()) {
+      logger.info(`📱 [MOCK] Would send raw APNs background push: ${JSON.stringify(payload)}`);
+      return { success: true };
+    }
+
+    try {
+      const admin = getFirebaseAdmin();
+      const apnsTopic = payload.apnsTopic || process.env.IOS_BUNDLE_ID || process.env.APNS_TOPIC;
+
+      if (!apnsTopic) {
+        logger.error(
+          '❌ Silent push blocked: missing APNS topic. Set IOS_BUNDLE_ID or APNS_TOPIC to your iOS app bundle id.'
+        );
+        return { success: false, error: 'Missing APNS topic' };
+      }
+
+      const headers: Record<string, string> = {
+        'apns-priority': '5',
+        'apns-push-type': 'background',
+        'apns-topic': apnsTopic,
+      };
+
+      const data = {
+        type: payload.type,
+        action: payload.action,
+        duty_status: payload.dutyStatus,
+        commandId: payload.commandId,
+      };
+
+      const message = {
+        token: fcmToken,
+        data,
+        apns: {
+          headers,
+          payload: {
+            aps: {
+              contentAvailable: true,
+            },
+            ...data,
+          },
+        },
+      };
+
+      const messageId = await admin.messaging().send(message);
+      logger.info(
+        `📱 Raw APNs background push sent successfully to ${fcmToken.substring(0, 20)}... topic=${apnsTopic} messageId=${messageId}`
+      );
+
+      return { success: true, messageId };
+    } catch (error: any) {
+      if (
+        error.code === 'messaging/invalid-registration-token' ||
+        error.code === 'messaging/registration-token-not-registered'
+      ) {
+        logger.warn(`⚠️  Invalid FCM token, marking for cleanup: ${error.code}`);
+        return { success: false, error: error.code };
+      }
+
+      logger.error(
+        `❌ Raw APNs background push failed: code=${error?.code || 'unknown'} message=${error?.message || 'unknown'}`,
+        error
+      );
+      return { success: false, error: error?.message || 'Unknown silent push error' };
+    }
+  }
+
   /**
    * Send silent push notification (content-available)
    * This wakes the app in background for up to 30 seconds
@@ -150,13 +226,16 @@ class PushNotificationService {
     sessionId?: number,
     companyId?: number,
     source: string = 'webhook',
-    message?: string
+    message?: string,
+    apnsTopic?: string
   ): Promise<{
     method: 'sse' | 'push' | 'both' | 'failed';
     success: boolean;
     sseSent: boolean;
     pushSent: boolean;
     commandId: string;
+    messageId?: string;
+    pushError?: string;
   }> {
     const driver = await prisma.driver.findUnique({
       where: { id: driverId },
@@ -164,31 +243,40 @@ class PushNotificationService {
 
     const commandId = this.createCommandId(driverId);
     const action: 'block' | 'unblock' = shouldBlock ? 'block' : 'unblock';
+    const resolvedSessionId =
+      sessionId ||
+      (
+        await prisma.drivingSession.findFirst({
+          where: {
+            driverId,
+            endedAt: null,
+          },
+          orderBy: {
+            startedAt: 'desc',
+          },
+          select: {
+            id: true,
+          },
+        })
+      )?.id;
 
     if (!driver) {
       logger.error(`❌ Driver ${driverId} not found`);
-      return { method: 'failed', success: false, sseSent: false, pushSent: false, commandId };
+      return {
+        method: 'failed',
+        success: false,
+        sseSent: false,
+        pushSent: false,
+        commandId,
+        pushError: 'Driver not found',
+      };
     }
-
-    const payload: PushNotificationPayload = {
-      type: 'blocking_command',
-      commandId,
-      action,
-      message:
-        message ||
-        (shouldBlock ? 'start blocking now' : 'stop blocking now'),
-      dutyStatus,
-      sessionId,
-      companyId,
-      shouldBlock,
-      timestamp: new Date().toISOString(),
-    };
 
     await prisma.pushCommand.create({
       data: {
         commandId,
         driverId,
-        sessionId,
+        sessionId: resolvedSessionId,
         requestedAction: action,
         shouldBlock,
         dutyStatus,
@@ -203,12 +291,27 @@ class PushNotificationService {
     //   logger.info(`✅ Blocking command sent via SSE to driver ${driverId} commandId=${commandId}`);
     // }
 
-    // Also send push so app gets trigger even when SSE is intermittent.
+    // Always send the silent APNs-compatible payload for block/unblock commands.
     let pushSent = false;
+    let messageId: string | undefined;
+    let pushError: string | undefined;
     if (driver.fcmToken) {
-      pushSent = await this.sendSilentPush(driver.fcmToken, payload);
+      const apnsResult = await this.sendRawApnsBackgroundPush(driver.fcmToken, {
+        type: 'blocking_command',
+        action,
+        dutyStatus: dutyStatus || (shouldBlock ? 'driving' : 'off_duty'),
+        commandId,
+        apnsTopic,
+      });
+      pushSent = apnsResult.success;
+      messageId = apnsResult.messageId;
+      pushError = apnsResult.error;
+      //print full obejct of apnsResult, its showing object object in logs, we need to see the full details for debugging
+      logger.info(`APNs push result: ${JSON.stringify(apnsResult)}`);
       if (pushSent) {
-        logger.info(`✅ Blocking command sent via PUSH to driver ${driverId} commandId=${commandId}`);
+        logger.info(
+          `✅ Blocking command sent via APNs background payload to driver ${driverId} commandId=${commandId} sessionId=${resolvedSessionId || 'none'}`
+        );
       }
     } else {
       logger.warn(`⚠️  No FCM token for driver ${driverId} - cannot send push`);
@@ -223,9 +326,9 @@ class PushNotificationService {
       },
     });
 
-    if (sessionId) {
+    if (resolvedSessionId) {
       await prisma.drivingSession.update({
-        where: { id: sessionId },
+        where: { id: resolvedSessionId },
         data: {
           requestedBlockingState: shouldBlock,
           lastCommandId: commandId,
@@ -240,11 +343,26 @@ class PushNotificationService {
     //   return { method: 'sse', success: true, sseSent: true, pushSent: false, commandId };
     // }
     if (pushSent) {
-      return { method: 'push', success: true, sseSent: false, pushSent: true, commandId };
+      return {
+        method: 'push',
+        success: true,
+        sseSent: false,
+        pushSent: true,
+        commandId,
+        messageId,
+      };
     }
 
     logger.error(`❌ Failed to send blocking command to driver ${driverId} commandId=${commandId}`);
-    return { method: 'failed', success: false, sseSent: false, pushSent: false, commandId };
+    return {
+      method: 'failed',
+      success: false,
+      sseSent: false,
+      pushSent: false,
+      commandId,
+      messageId,
+      pushError,
+    };
   }
 
   /**
@@ -264,6 +382,81 @@ class PushNotificationService {
       companyId,
       'duty_status_change'
     );
+  }
+
+  async sendHeartbeat(
+    driverId: number,
+    sessionId: number,
+    sessionKey: string,
+    blockingActive: boolean,
+    dutyStatus: string
+  ): Promise<{
+    success: boolean;
+    pushSent: boolean;
+    commandId: string;
+    messageId?: string;
+    pushError?: string;
+  }> {
+    const driver = await prisma.driver.findUnique({
+      where: { id: driverId },
+      select: {
+        id: true,
+        fcmToken: true,
+      },
+    });
+
+    const commandId = this.createCommandId(driverId);
+
+    await prisma.pushCommand.create({
+      data: {
+        commandId,
+        driverId,
+        sessionId,
+        requestedAction: 'heartbeat',
+        shouldBlock: blockingActive,
+        dutyStatus,
+        source: 'heartbeat',
+      },
+    });
+
+    if (!driver?.fcmToken) {
+      return {
+        success: false,
+        pushSent: false,
+        commandId,
+        pushError: 'Driver has no FCM token',
+      };
+    }
+
+    const apnsResult = await this.sendRawApnsBackgroundPush(driver.fcmToken, {
+      type: 'heartbeat',
+      action: blockingActive ? 'block' : 'unblock',
+      dutyStatus,
+      commandId,
+    });
+
+    await prisma.pushCommand.update({
+      where: { commandId },
+      data: {
+        pushSent: apnsResult.success,
+        sentAt: new Date(),
+        rawAck: {
+          type: 'heartbeat',
+          session_id: sessionKey,
+          duty_status: dutyStatus,
+          blocking_active: blockingActive,
+          sent_at: new Date().toISOString(),
+        } as any,
+      },
+    });
+
+    return {
+      success: apnsResult.success,
+      pushSent: apnsResult.success,
+      commandId,
+      messageId: apnsResult.messageId,
+      pushError: apnsResult.error,
+    };
   }
 }
 
