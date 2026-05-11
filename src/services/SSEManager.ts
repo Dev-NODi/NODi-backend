@@ -1,5 +1,5 @@
 import { Response } from 'express';
-import redis from '../config/redis';
+// import redis from '../config/redis';
 import logger from '../config/logger';
 
 interface SSEConnection {
@@ -30,7 +30,7 @@ class SSEManager {
     });
 
     // Store in Redis for tracking across server instances
-    await redis.hset('sse:connections', driverId.toString(), Date.now().toString());
+    // await redis.hset('sse:connections', driverId.toString(), Date.now().toString());
 
     logger.info(
       `🔌 SSE connected: driver=${driverId} (${this.connections.size} total connections)`
@@ -45,7 +45,7 @@ class SSEManager {
     if (connection) {
       connection.response.end();
       this.connections.delete(driverId);
-      await redis.hdel('sse:connections', driverId.toString());
+      // await redis.hdel('sse:connections', driverId.toString());
 
       logger.info(
         `🔌 SSE disconnected: driver=${driverId} (${this.connections.size} remaining)`

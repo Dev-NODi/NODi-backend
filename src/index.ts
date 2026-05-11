@@ -6,7 +6,7 @@ import cors from 'cors';
 import helmet from 'helmet';
 import swaggerUi from 'swagger-ui-express';
 import logger from './config/logger';
-import redis from './config/redis';
+// import redis from './config/redis';
 import prisma from './config/database';
 import { errorHandler } from './middleware/errorHandler';
 import routes from './routes';
@@ -46,8 +46,8 @@ app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerDocument));
 app.get('/health', async (req: Request, res: Response) => {
   try {
     // Check Redis
-    const redisPing = await redis.ping();
-    const redisConnected = redisPing === 'PONG';
+    // const redisPing = await redis.ping();
+    // const redisConnected = redisPing === 'PONG';
 
     // Check PostgreSQL
     await prisma.$queryRaw`SELECT 1`;
@@ -58,7 +58,7 @@ app.get('/health', async (req: Request, res: Response) => {
       timestamp: new Date().toISOString(),
       uptime: process.uptime(),
       environment: process.env.NODE_ENV,
-      redis: redisConnected ? 'connected' : 'disconnected',
+      // redis: redisConnected ? 'connected' : 'disconnected',
       database: databaseConnected ? 'connected' : 'disconnected',
     };
 
@@ -135,12 +135,12 @@ const gracefulShutdown = async (signal: string) => {
       logger.error('Error disconnecting PostgreSQL:', err);
     }
 
-    try {
-      await redis.quit();
-      logger.info('✅ Redis disconnected');
-    } catch (err) {
-      logger.error('Error disconnecting Redis:', err);
-    }
+    // try {
+    //   await redis.quit();
+    //   logger.info('✅ Redis disconnected');
+    // } catch (err) {
+    //   logger.error('Error disconnecting Redis:', err);
+    // }
 
     logger.info('✅ Graceful shutdown complete');
     process.exit(0);
