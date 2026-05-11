@@ -227,7 +227,7 @@ export const swaggerDocument = {
                 tags: ['Fleet'],
                 summary: 'Fleet dashboard snapshot',
                 description:
-                    'Firebase Bearer (fleet manager). Returns `stats` (active driver count as `activeVehicles`, open sessions with blocking requested+applied as `currentlyLocked`, `tamperAlertsToday` = count of sessions with `is_tampered` and `tampered_at` on the current US Eastern calendar day), `safety.score` as the fleet average of per-session scores (100 − 2×`total_block_attempts`, min 50) over `driving_sessions` in the last-30-day window (started or ended in the window, or still open; 100 if none), and `activity` as a merged feed of recent tamper events (`tampered_at`, `tampered_reason`) and recent unlock-attempt sessions (`total_block_attempts` > 0), newest first.',
+                    'Firebase Bearer (fleet manager). Returns `stats` (active driver count as `activeVehicles`, open sessions with blocking requested+applied as `currentlyLocked`, `tamperAlertsToday` = count of sessions with `is_tampered` and `tampered_at` on the current US Eastern calendar day), `safety.score` as the fleet average of active-driver 30-day scores (each driver score is the average of session scores where session score = 100 − 2×`total_block_attempts` − 5×tamper, floored at 0), and `activity` as a merged feed of recent tamper events (`tampered_at`, `tampered_reason`) and recent unlock-attempt sessions (`total_block_attempts` > 0), newest first.',
                 security: [{ bearerAuth: [] }],
                 responses: {
                     200: {
@@ -267,7 +267,7 @@ export const swaggerDocument = {
                 tags: ['Fleet'],
                 summary: 'Fleet driver roster',
                 description:
-                    'Firebase Bearer (fleet manager). Returns all active `drivers` rows (`name` from DB); each row includes `truckId` as Motive `vehicle.number` when present on live driver-locations for that Motive driver id, otherwise resolved from `GET /v1/vehicle_locations/:vehicleId` for the active or latest-session vehicle id, otherwise the raw Motive vehicle id string. Also `safetyScore` (average per-session score over `driving_sessions` in the rolling 30-day window: 100 − 2×`total_block_attempts` per session, min 50), `totalBlockAttempts` (sum of attempts across those windowed sessions), and `dutyStatus` (webhook fallback). Fleet UI merges `dutyStatus` from Motive live-locations when that snapshot includes the driver. Not filtered by company.',
+                    'Firebase Bearer (fleet manager). Returns all active `drivers` rows (`name` from DB); each row includes `truckId` as Motive `vehicle.number` when present on live driver-locations for that Motive driver id, otherwise resolved from `GET /v1/vehicle_locations/:vehicleId` for the active or latest-session vehicle id, otherwise the raw Motive vehicle id string. Also `safetyScore` (average per-session score over `driving_sessions` in the rolling 30-day window: 100 − 2×`total_block_attempts` − 5×tamper, floored at 0), `totalBlockAttempts` (sum of attempts across those windowed sessions), and `dutyStatus` (webhook fallback). Fleet UI merges `dutyStatus` from Motive live-locations when that snapshot includes the driver. Not filtered by company.',
                 security: [{ bearerAuth: [] }],
                 responses: {
                     200: {
@@ -287,7 +287,7 @@ export const swaggerDocument = {
                 tags: ['Fleet'],
                 summary: 'Fleet driver detail (session + distraction timeline)',
                 description:
-                    'Firebase Bearer (fleet manager). Returns `drivers` plus active/latest `driving_sessions` (any company), push-command spikes, `safetyScore` (same 30-day average as the drivers list, then minus 5 points per session with `is_tampered` in that window, floored at 50), `totalBlockAttempts` (same window as list), `sessionTimelines`: recent sessions (newest first, up to 35), and `truckId` as Motive `vehicle.number` for the active session vehicle when resolvable from Motive APIs (else numeric vehicle id). Path id is internal `drivers.id` or `motive_driver_id`. Not filtered by company.',
+                    'Firebase Bearer (fleet manager). Returns `drivers` plus active/latest `driving_sessions` (any company), push-command spikes, `safetyScore` (same 30-day average as the drivers list using session score = 100 − 2×`total_block_attempts` − 5×tamper, floored at 0), `totalBlockAttempts` (same window as list), `sessionTimelines`: recent sessions (newest first, up to 35), and `truckId` as Motive `vehicle.number` for the active session vehicle when resolvable from Motive APIs (else numeric vehicle id). Path id is internal `drivers.id` or `motive_driver_id`. Not filtered by company.',
                 security: [{ bearerAuth: [] }],
                 parameters: [
                     {

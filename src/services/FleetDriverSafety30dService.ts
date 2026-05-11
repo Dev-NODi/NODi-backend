@@ -4,7 +4,7 @@ import { fleetSafetyCutoff, sessionsRelevantToWindow } from '../utils/fleetSessi
 
 /**
  * Per-driver safety for list/detail: average of per-session scores
- * (100 − 2×`total_block_attempts`, min 50) over sessions in the 30-day relevance window.
+ * (100 − 2×`total_block_attempts` − 5×tamper, min 0) over sessions in the 30-day relevance window.
  * No sessions in window → 100.
  */
 class FleetDriverSafety30dService {
@@ -15,11 +15,11 @@ class FleetDriverSafety30dService {
         driverId: internalDriverId,
         ...sessionsRelevantToWindow(cutoff),
       },
-      select: { totalBlockAttempts: true },
+      select: { totalBlockAttempts: true, isTampered: true },
     });
     if (sessions.length === 0) return 100;
     const sum = sessions.reduce(
-      (acc, s) => acc + safetyScoreFromBlockAttempts(s.totalBlockAttempts),
+      (acc, s) => acc + safetyScoreFromBlockAttempts(s.totalBlockAttempts, s.isTampered ? 1 : 0),
       0,
     );
     return Math.round(sum / sessions.length);
@@ -44,26 +44,29 @@ class FleetDriverSafety30dService {
         driverId: { in: internalDriverIds },
         ...sessionsRelevantToWindow(cutoff),
       },
-      select: { driverId: true, totalBlockAttempts: true },
+      select: { driverId: true, totalBlockAttempts: true, isTampered: true },
     });
 
-    const grouped = new Map<number, number[]>();
+    const grouped = new Map<number, Array<{ attempts: number; tamperCount: number }>>();
     for (const r of rows) {
       const list = grouped.get(r.driverId) ?? [];
-      list.push(r.totalBlockAttempts);
+      list.push({
+        attempts: r.totalBlockAttempts,
+        tamperCount: r.isTampered ? 1 : 0,
+      });
       grouped.set(r.driverId, list);
     }
 
     for (const id of internalDriverIds) {
-      const attempts = grouped.get(id);
-      if (!attempts?.length) continue;
-      const sumScore = attempts.reduce(
-        (a, n) => a + safetyScoreFromBlockAttempts(n),
+      const sessions = grouped.get(id);
+      if (!sessions?.length) continue;
+      const sumScore = sessions.reduce(
+        (a, s) => a + safetyScoreFromBlockAttempts(s.attempts, s.tamperCount),
         0,
       );
-      const totalBlockAttempts = attempts.reduce((a, n) => a + n, 0);
+      const totalBlockAttempts = sessions.reduce((a, s) => a + s.attempts, 0);
       out.set(id, {
-        safetyScore: Math.round(sumScore / attempts.length),
+        safetyScore: Math.round(sumScore / sessions.length),
         totalBlockAttempts,
       });
     }

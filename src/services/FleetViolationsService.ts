@@ -69,16 +69,18 @@ async function loadBlockedAttemptTimestampsBySessionId(
 function parseBlockedAttemptTimestamps(raw: unknown): number[] {
   if (raw == null) return [];
   if (Array.isArray(raw)) {
-    return raw
-      .map((x) => {
-        if (typeof x === 'number' && Number.isFinite(x)) return x;
-        if (typeof x === 'string') {
-          const n = Number(x);
-          return Number.isFinite(n) ? n : Number.NaN;
-        }
-        return Number.NaN;
-      })
-      .filter((n) => Number.isFinite(n));
+    const out: number[] = [];
+    for (const x of raw) {
+      if (typeof x === 'number' && Number.isFinite(x)) {
+        out.push(x);
+        continue;
+      }
+      if (typeof x === 'string') {
+        const n = Number(x);
+        if (Number.isFinite(n)) out.push(n);
+      }
+    }
+    return out;
   }
   if (typeof raw === 'object' && raw !== null) {
     const o = raw as Record<string, unknown>;
@@ -92,11 +94,6 @@ function parseBlockedAttemptTimestamps(raw: unknown): number[] {
   return [];
 }
 
-function instantFromBlockedUnix(unix: number): Date {
-  const ms = unix > 1e12 ? unix : unix * 1000;
-  return new Date(ms);
-}
-
 function collectBlockedAttemptIsosInSessionWindow(
   startedAt: Date,
   endedAt: Date | null,
@@ -108,13 +105,10 @@ function collectBlockedAttemptIsosInSessionWindow(
   if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs < startMs) return [];
 
   return parseBlockedAttemptTimestamps(blockedJson)
-    .map((unix) => instantFromBlockedUnix(unix))
-    .filter((d) => {
-      const t = d.getTime();
-      return Number.isFinite(t) && t >= startMs && t <= endMs;
-    })
-    .sort((a, b) => a.getTime() - b.getTime())
-    .map((d) => d.toISOString());
+    .map((unix) => (unix > 1e12 ? unix : unix * 1000))
+    .filter((t) => Number.isFinite(t) && t >= startMs && t <= endMs)
+    .sort((a, b) => a - b)
+    .map((t) => new Date(t).toISOString());
 }
 
 function summarizeBlockedApps(raw: unknown): string | null {

@@ -1,17 +1,8 @@
 import prisma from '../config/database';
 import { Prisma } from '../generated/prisma/client';
-import { fleetSafetyCutoff, sessionsRelevantToWindow } from '../utils/fleetSessionWindow';
 import { tamperMessageFromReason } from '../utils/tamperMessageFromReason';
 import FleetDriverSafety30dService from './FleetDriverSafety30dService';
 import LiveFleetLocationService from './LiveFleetLocationService';
-
-/** Driver detail only: subtract from rolling 30-day average score (same floor as per-session scores). */
-const TAMPER_SAFETY_PENALTY_PER_SESSION = 5;
-
-function safetyScoreWithTamperPenalty(baseScore: number, tamperSessionCount: number): number {
-  const n = Math.max(0, Math.floor(tamperSessionCount));
-  return Math.max(50, Math.round(baseScore - TAMPER_SAFETY_PENALTY_PER_SESSION * n));
-}
 
 export type FleetDriverDistractionAttempt = {
   /** Minutes after session `startedAt` (for timeline bars). */
@@ -65,8 +56,8 @@ export type FleetDriverDetailPayload = {
   /** Motive-style vehicle id from session when present; UI can label as truck. */
   truckId: string;
   /**
-   * 0–100: 30-day average session score (block attempts), then minus 5 per tampered session
-   * in that window; minimum 50.
+   * 0–100: 30-day average session score using
+   * (100 - 2*unlock_attempts - 5*tamper_events), floored at 0 per session.
    */
   safetyScore: number;
   /** `HH:mm` in UTC (same instant as `tripStartedAt` ISO). */
@@ -284,20 +275,12 @@ class FleetDriverDetailService {
       OR: [{ driverId: internalDriverId }, { motiveDriverId: driverId }],
     };
 
-    const cutoff = fleetSafetyCutoff();
-    const [windowStatsMap, recentSessions, tamperSessionsInWindow] = await Promise.all([
+    const [windowStatsMap, recentSessions] = await Promise.all([
       FleetDriverSafety30dService.mapByInternalDriverIds([internalDriverId]),
       prisma.drivingSession.findMany({
         where: sessionScope,
         orderBy: [{ startedAt: 'desc' }, { id: 'desc' }],
         take: RECENT_SESSION_TIMELINE_LIMIT,
-      }),
-      prisma.drivingSession.count({
-        where: {
-          driverId: internalDriverId,
-          isTampered: true,
-          ...sessionsRelevantToWindow(cutoff),
-        },
       }),
     ]);
 
@@ -306,10 +289,7 @@ class FleetDriverDetailService {
         safetyScore: 100,
         totalBlockAttempts: 0,
       };
-    const safetyScore = safetyScoreWithTamperPenalty(
-      windowStats.safetyScore,
-      tamperSessionsInWindow,
-    );
+    const safetyScore = windowStats.safetyScore;
 
     const session =
       (await prisma.drivingSession.findFirst({

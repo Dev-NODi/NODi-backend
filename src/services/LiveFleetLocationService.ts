@@ -11,6 +11,8 @@ const DRIVER_IDS_CHUNK_SIZE = 40;
 const MOTIVE_LOCATIONS_PER_PAGE = 100;
 /** Fetch this many Motive list pages at once (same latency as one round-trip when parallel). */
 const MOTIVE_LIST_PAGE_PARALLELISM = 3;
+const VEHICLE_BY_DRIVER_CACHE_TTL_MS = 20_000;
+const VEHICLE_DETAIL_CACHE_TTL_MS = 20_000;
 
 /** Parsed row from Motive driver_locations (internal). */
 export interface LiveFleetDriverLocation {
@@ -76,6 +78,18 @@ export type LiveLocationsEnrichOptions = {
 };
 
 class LiveFleetLocationService {
+  private static vehicleByDriverCache:
+    | { data: Map<number, string>; fetchedAt: number }
+    | null = null;
+  private static vehicleByDriverInFlight: Promise<Map<number, string>> | null = null;
+  private static vehicleDetailCache = new Map<
+    number,
+    { fetchedAt: number; record: Record<string, unknown> | null }
+  >();
+  private static vehicleDetailInFlight = new Map<
+    number,
+    Promise<Record<string, unknown> | null>
+  >();
   private static getApiKey(): string {
     const apiKey = process.env.MOTIVE_API_KEY?.trim();
     if (!apiKey) {
@@ -620,27 +634,7 @@ class LiveFleetLocationService {
   static async getVehicleDisplayNumberByVehicleId(vehicleId: number): Promise<string | null> {
     if (!vehicleId || vehicleId <= 0) return null;
     try {
-      const apiKey = LiveFleetLocationService.getApiKey();
-      const baseUrl = LiveFleetLocationService.getBaseUrl();
-      const path =
-        process.env.MOTIVE_VEHICLE_LOCATIONS_PATH || DEFAULT_VEHICLE_LOCATIONS_PATH;
-      const today = new Date().toISOString().slice(0, 10);
-      const url = `${baseUrl}${path}/${vehicleId}?date=${today}`;
-
-      const response = await fetch(url, {
-        method: 'GET',
-        headers: {
-          accept: 'application/json',
-          'x-api-key': apiKey,
-        },
-      });
-
-      if (!response.ok) {
-        return null;
-      }
-
-      const payload = (await response.json()) as unknown;
-      const record = LiveFleetLocationService.pickVehicleLocationRecord(payload);
+      const record = await LiveFleetLocationService.getVehicleLocationDetailCached(vehicleId);
       if (!record) return null;
       return LiveFleetLocationService.extractVehicleNumberFromLocationDetailRecord(record);
     } catch (err) {
@@ -665,18 +659,18 @@ class LiveFleetLocationService {
       );
     }
 
-    const CHUNK = 8;
-    for (let i = 0; i < slice.length; i += CHUNK) {
-      const part = slice.slice(i, i + CHUNK);
-      const results = await Promise.all(
-        part.map(async (id) => {
-          const num = await LiveFleetLocationService.getVehicleDisplayNumberByVehicleId(id);
-          return { id, num } as const;
-        })
-      );
-      for (const { id, num } of results) {
+    const PARALLEL = 8;
+    let next = 0;
+    const workers = Array.from({ length: Math.min(PARALLEL, slice.length) }, async () => {
+      while (next < slice.length) {
+        const i = next++;
+        const id = slice[i];
+        const num = await LiveFleetLocationService.getVehicleDisplayNumberByVehicleId(id);
         if (num) map.set(id, num);
       }
+    });
+    if (workers.length > 0) {
+      await Promise.all(workers);
     }
     return map;
   }
@@ -686,7 +680,21 @@ class LiveFleetLocationService {
    * {@link getDriverLocationsWithDuty} (drivers map / cards). Plate only, not VIN.
    */
   static async getVehicleNumberByMotiveDriverIdMap(): Promise<Map<number, string>> {
+    const now = Date.now();
+    if (
+      LiveFleetLocationService.vehicleByDriverCache &&
+      now - LiveFleetLocationService.vehicleByDriverCache.fetchedAt <
+        VEHICLE_BY_DRIVER_CACHE_TTL_MS
+    ) {
+      return new Map(LiveFleetLocationService.vehicleByDriverCache.data);
+    }
+    if (LiveFleetLocationService.vehicleByDriverInFlight) {
+      const shared = await LiveFleetLocationService.vehicleByDriverInFlight;
+      return new Map(shared);
+    }
+
     const map = new Map<number, string>();
+    const p = (async () => {
     try {
       const locs = await LiveFleetLocationService.getDriverLocationsWithDuty({});
       for (const loc of locs) {
@@ -700,7 +708,19 @@ class LiveFleetLocationService {
         `Live driver locations for vehicle number map failed: ${err instanceof Error ? err.message : String(err)}`
       );
     }
-    return map;
+      LiveFleetLocationService.vehicleByDriverCache = {
+        data: new Map(map),
+        fetchedAt: Date.now(),
+      };
+      return map;
+    })();
+
+    LiveFleetLocationService.vehicleByDriverInFlight = p;
+    try {
+      return await p;
+    } finally {
+      LiveFleetLocationService.vehicleByDriverInFlight = null;
+    }
   }
 
   private static parseVehicleFleetListItem(item: unknown): {
@@ -743,14 +763,19 @@ class LiveFleetLocationService {
     const map = new Map<number, number>();
     if (vehicleIds.length === 0) return map;
 
-    const results = await Promise.all(
-      vehicleIds.map(async (vehicleId) => {
+    const PARALLEL = 10;
+    const unique = [...new Set(vehicleIds)];
+    let next = 0;
+    const workers = Array.from({ length: Math.min(PARALLEL, unique.length) }, async () => {
+      while (next < unique.length) {
+        const i = next++;
+        const vehicleId = unique[i]!;
         const mph = await LiveFleetLocationService.getVehicleSpeedMph(vehicleId);
-        return { vehicleId, mph } as const;
-      })
-    );
-    for (const { vehicleId, mph } of results) {
-      if (mph !== null) map.set(vehicleId, mph);
+        if (mph !== null) map.set(vehicleId, mph);
+      }
+    });
+    if (workers.length > 0) {
+      await Promise.all(workers);
     }
     return map;
   }
@@ -760,33 +785,11 @@ class LiveFleetLocationService {
    * Tries common Motive fields (speed in mph, or kph converted to mph).
    */
   static async getVehicleSpeedMph(vehicleId: number): Promise<number | null> {
-    const apiKey = LiveFleetLocationService.getApiKey();
-    const baseUrl = LiveFleetLocationService.getBaseUrl();
-    const path =
-      process.env.MOTIVE_VEHICLE_LOCATIONS_PATH || DEFAULT_VEHICLE_LOCATIONS_PATH;
-    const today = new Date().toISOString().slice(0, 10);
-    const url = `${baseUrl}${path}/${vehicleId}?date=${today}`;
-
-    const response = await fetch(url, {
-      method: 'GET',
-      headers: {
-        accept: 'application/json',
-        'x-api-key': apiKey,
-      },
-    });
-
-    if (!response.ok) {
-      const bodyText = await response.text();
-      logger.warn(`Motive vehicle_locations/${vehicleId} error (${response.status}): ${bodyText}`);
-      return null;
-    }
-
-    const payload = (await response.json()) as unknown;
-    const record = LiveFleetLocationService.pickVehicleLocationRecord(payload);
+    const record = await LiveFleetLocationService.getVehicleLocationDetailCached(vehicleId);
     if (!record) {
       if (process.env.MOTIVE_DEBUG_SPEED === '1' || process.env.MOTIVE_DEBUG_SPEED === 'true') {
         logger.info(
-          `Motive speed debug vehicleId=${vehicleId}: pickVehicleLocationRecord returned null; payload keys=${payload && typeof payload === 'object' ? Object.keys(payload as object).join(',') : 'n/a'}`
+          `Motive speed debug vehicleId=${vehicleId}: pickVehicleLocationRecord returned null`
         );
       }
       return null;
@@ -826,6 +829,70 @@ class LiveFleetLocationService {
     }
 
     return null;
+  }
+
+  private static async getVehicleLocationDetailCached(
+    vehicleId: number
+  ): Promise<Record<string, unknown> | null> {
+    const cached = LiveFleetLocationService.vehicleDetailCache.get(vehicleId);
+    const now = Date.now();
+    if (cached && now - cached.fetchedAt < VEHICLE_DETAIL_CACHE_TTL_MS) {
+      return cached.record;
+    }
+
+    const running = LiveFleetLocationService.vehicleDetailInFlight.get(vehicleId);
+    if (running) return running;
+
+    const p = (async () => {
+      try {
+        const apiKey = LiveFleetLocationService.getApiKey();
+        const baseUrl = LiveFleetLocationService.getBaseUrl();
+        const path =
+          process.env.MOTIVE_VEHICLE_LOCATIONS_PATH || DEFAULT_VEHICLE_LOCATIONS_PATH;
+        const today = new Date().toISOString().slice(0, 10);
+        const url = `${baseUrl}${path}/${vehicleId}?date=${today}`;
+
+        const response = await fetch(url, {
+          method: 'GET',
+          headers: {
+            accept: 'application/json',
+            'x-api-key': apiKey,
+          },
+        });
+
+        if (!response.ok) {
+          const bodyText = await response.text();
+          logger.warn(`Motive vehicle_locations/${vehicleId} error (${response.status}): ${bodyText}`);
+          LiveFleetLocationService.vehicleDetailCache.set(vehicleId, {
+            fetchedAt: Date.now(),
+            record: null,
+          });
+          return null;
+        }
+
+        const payload = (await response.json()) as unknown;
+        const record = LiveFleetLocationService.pickVehicleLocationRecord(payload);
+        LiveFleetLocationService.vehicleDetailCache.set(vehicleId, {
+          fetchedAt: Date.now(),
+          record,
+        });
+        return record;
+      } catch (err) {
+        logger.warn(
+          `Motive vehicle_locations/${vehicleId} request failed: ${err instanceof Error ? err.message : String(err)}`
+        );
+        LiveFleetLocationService.vehicleDetailCache.set(vehicleId, {
+          fetchedAt: Date.now(),
+          record: null,
+        });
+        return null;
+      } finally {
+        LiveFleetLocationService.vehicleDetailInFlight.delete(vehicleId);
+      }
+    })();
+
+    LiveFleetLocationService.vehicleDetailInFlight.set(vehicleId, p);
+    return p;
   }
 
   private static extractUsersArray(payload: unknown): unknown[] {

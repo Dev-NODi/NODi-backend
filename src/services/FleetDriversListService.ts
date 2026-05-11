@@ -10,7 +10,7 @@ export type FleetDriverListRow = {
   internalDriverId: number;
   name: string;
   truckId: string;
-  /** 0–100: average per-session score over driving_sessions in the last 30-day window (same formula as fleet dashboard). */
+  /** 0–100: average per-session score over driving_sessions in the last 30-day window. */
   safetyScore: number;
   /** Sum of `total_block_attempts` across those same windowed sessions. */
   totalBlockAttempts: number;

@@ -1,6 +1,5 @@
 import prisma from '../config/database';
 import { fleetSafetyCutoff, sessionsRelevantToWindow } from '../utils/fleetSessionWindow';
-import { safetyScoreFromBlockAttempts } from '../utils/safetyScoreFromBlockAttempts';
 import { tamperMessageFromReason } from '../utils/tamperMessageFromReason';
 
 const FLEET_ACTIVITY_LIMIT = 40;
@@ -28,22 +27,44 @@ export type FleetDashboardPayload = {
 
 class FleetDashboardService {
   /**
-   * Average of per-session scores (100 − 2×`total_block_attempts`, min 50) over
-   * driving sessions that fall in the 30-day relevance window above.
-   * If none match → 100.
+   * Fleet score = average of active-driver 30-day scores.
+   * Driver 30-day score = average of session scores in window, where each session score is
+   * max(0, 100 - 2*total_block_attempts - 5*(is_tampered ? 1 : 0)).
+   * If a driver has no sessions in window, that driver contributes 100.
    */
   private static async fleetSafetyScoreLast30Days(): Promise<number> {
     const cutoff = fleetSafetyCutoff();
-    const sessions = await prisma.drivingSession.findMany({
-      where: sessionsRelevantToWindow(cutoff),
-      select: { totalBlockAttempts: true },
-    });
-    if (sessions.length === 0) return 100;
-    const sum = sessions.reduce(
-      (acc, s) => acc + safetyScoreFromBlockAttempts(s.totalBlockAttempts),
-      0
-    );
-    return Math.round(sum / sessions.length);
+    const rows = await prisma.$queryRaw<Array<{ score: number | null }>>`
+      WITH active_drivers AS (
+        SELECT id
+        FROM drivers
+        WHERE is_active = true
+      ),
+      session_scores AS (
+        SELECT
+          ds.driver_id,
+          GREATEST(0, 100 - 2 * ds.total_block_attempts - CASE WHEN ds.is_tampered THEN 5 ELSE 0 END) AS session_score
+        FROM driving_sessions ds
+        WHERE ds.started_at >= ${cutoff}
+           OR ds.ended_at >= ${cutoff}
+           OR ds.ended_at IS NULL
+      ),
+      driver_scores AS (
+        SELECT
+          ad.id AS driver_id,
+          COALESCE(ROUND(AVG(ss.session_score)), 100)::int AS driver_score
+        FROM active_drivers ad
+        LEFT JOIN session_scores ss ON ss.driver_id = ad.id
+        GROUP BY ad.id
+      )
+      SELECT ROUND(AVG(driver_score))::int AS score
+      FROM driver_scores
+    `;
+    const score = rows[0]?.score;
+    if (typeof score === 'number' && Number.isFinite(score)) {
+      return score;
+    }
+    return 100;
   }
 
   /**
@@ -132,39 +153,39 @@ class FleetDashboardService {
     unlock: FleetDashboardActivityItem[],
     limit: number
   ): FleetDashboardActivityItem[] {
-    const merged = [...tamper, ...unlock];
+    const merged = [...tamper, ...unlock].map((e) => ({
+      ...e,
+      _atMs: Date.parse(e.at),
+    }));
     merged.sort((a, b) => {
-      const ta = new Date(a.at).getTime();
-      const tb = new Date(b.at).getTime();
-      if (tb !== ta) return tb - ta;
+      if (b._atMs !== a._atMs) return b._atMs - a._atMs;
       if (a.type === 'tamper' && b.type !== 'tamper') return -1;
       if (a.type !== 'tamper' && b.type === 'tamper') return 1;
       return 0;
     });
-    return merged.slice(0, limit);
+    return merged.slice(0, limit).map(({ _atMs: _ignored, ...e }) => e);
   }
 
   static async getPayload(): Promise<FleetDashboardPayload> {
     const cutoff = fleetSafetyCutoff();
 
-    const [totalDrivers, lockedSessionRows, fleetSafetyScore, tamperToday, unlockActivity, tamperActivity] =
+    const [totalDrivers, lockedDriversCountRows, fleetSafetyScore, tamperToday, unlockActivity, tamperActivity] =
       await Promise.all([
         prisma.driver.count({ where: { isActive: true } }),
-        prisma.drivingSession.findMany({
-          where: {
-            endedAt: null,
-            requestedBlockingState: true,
-            appliedBlockingState: true,
-          },
-          select: { driverId: true },
-        }),
+        prisma.$queryRaw<Array<{ c: bigint }>>`
+          SELECT COUNT(DISTINCT driver_id)::bigint AS c
+          FROM driving_sessions
+          WHERE ended_at IS NULL
+            AND requested_blocking_state = true
+            AND applied_blocking_state = true
+        `,
         FleetDashboardService.fleetSafetyScoreLast30Days(),
         FleetDashboardService.tamperAlertsTodayCount(),
         FleetDashboardService.fleetUnlockActivity(cutoff),
         FleetDashboardService.fleetTamperActivity(30),
       ]);
 
-    const phoneLockedDrivers = new Set(lockedSessionRows.map((r) => r.driverId)).size;
+    const phoneLockedDrivers = Number(lockedDriversCountRows[0]?.c ?? 0);
 
     const activity = FleetDashboardService.mergeActivity(
       tamperActivity,
