@@ -10,6 +10,65 @@ export interface SessionStateTransition {
 }
 
 class SessionService {
+  private attachSyncStatus<T extends {
+    dutyStatus: string;
+    blockingActive: boolean;
+    requestedBlockingState: boolean | null;
+    appliedBlockingState: boolean | null;
+    lastCommandId: string | null;
+    lastAckAt: Date | null;
+    lastAckReason: string | null;
+    pushCommands?: Array<{
+      commandId: string;
+      requestedAction: string;
+      shouldBlock: boolean;
+      pushSent: boolean;
+      sentAt: Date | null;
+      ackApplied: boolean | null;
+      ackTimestamp: Date | null;
+      ackReason: string | null;
+    }>;
+  }>(session: T) {
+    const expectedBlocking =
+      session.requestedBlockingState ?? (session.dutyStatus === 'driving');
+    const appliedBlocking = session.appliedBlockingState;
+    const latestCommand = session.pushCommands?.[0] || null;
+
+    let syncState: 'synced' | 'out_of_sync' | 'pending_ack' | 'unknown' = 'unknown';
+    if (appliedBlocking === null || appliedBlocking === undefined) {
+      syncState = session.lastCommandId ? 'pending_ack' : 'unknown';
+    } else if (appliedBlocking === expectedBlocking) {
+      syncState = 'synced';
+    } else {
+      syncState = 'out_of_sync';
+    }
+
+    return {
+      ...session,
+      sync: {
+        motiveExpectedBlocking: expectedBlocking,
+        appAppliedBlocking: appliedBlocking,
+        inSync: syncState === 'synced',
+        syncState,
+        lastCommandId: session.lastCommandId,
+        lastAckAt: session.lastAckAt,
+        lastAckReason: session.lastAckReason,
+        latestCommand: latestCommand
+          ? {
+              commandId: latestCommand.commandId,
+              requestedAction: latestCommand.requestedAction,
+              shouldBlock: latestCommand.shouldBlock,
+              pushSent: latestCommand.pushSent,
+              sentAt: latestCommand.sentAt,
+              ackApplied: latestCommand.ackApplied,
+              ackTimestamp: latestCommand.ackTimestamp,
+              ackReason: latestCommand.ackReason,
+            }
+          : null,
+      },
+    };
+  }
+
   /**
    * Determine what to do with session based on duty status change
    * 
@@ -318,14 +377,14 @@ class SessionService {
    * Get session by ID
    */
   async getSessionById(sessionId: number) {
-    return await prisma.drivingSession.findUnique({
+    const session = await prisma.drivingSession.findUnique({
       where: { id: sessionId },
       include: {
         driver: {
           select: {
             id: true,
             name: true,
-            phone: true,
+            email: true,
           },
         },
         company: {
@@ -334,15 +393,33 @@ class SessionService {
             name: true,
           },
         },
+        pushCommands: {
+          orderBy: {
+            createdAt: 'desc',
+          },
+          take: 1,
+          select: {
+            commandId: true,
+            requestedAction: true,
+            shouldBlock: true,
+            pushSent: true,
+            sentAt: true,
+            ackApplied: true,
+            ackTimestamp: true,
+            ackReason: true,
+          },
+        },
       },
     });
+
+    return session ? this.attachSyncStatus(session) : null;
   }
 
   /**
    * Get all active sessions
    */
   async getAllActiveSessions() {
-    return await prisma.drivingSession.findMany({
+    const sessions = await prisma.drivingSession.findMany({
       where: {
         endedAt: null,
       },
@@ -351,7 +428,7 @@ class SessionService {
           select: {
             id: true,
             name: true,
-            phone: true,
+            email: true,
           },
         },
         company: {
@@ -360,18 +437,36 @@ class SessionService {
             name: true,
           },
         },
+        pushCommands: {
+          orderBy: {
+            createdAt: 'desc',
+          },
+          take: 1,
+          select: {
+            commandId: true,
+            requestedAction: true,
+            shouldBlock: true,
+            pushSent: true,
+            sentAt: true,
+            ackApplied: true,
+            ackTimestamp: true,
+            ackReason: true,
+          },
+        },
       },
       orderBy: {
         startedAt: 'desc',
       },
     });
+
+    return sessions.map((session) => this.attachSyncStatus(session));
   }
 
   /**
    * Get sessions for a driver
    */
   async getDriverSessions(driverId: number, limit: number = 50) {
-    return await prisma.drivingSession.findMany({
+    const sessions = await prisma.drivingSession.findMany({
       where: { driverId },
       orderBy: { startedAt: 'desc' },
       take: limit,
@@ -382,8 +477,26 @@ class SessionService {
             name: true,
           },
         },
+        pushCommands: {
+          orderBy: {
+            createdAt: 'desc',
+          },
+          take: 1,
+          select: {
+            commandId: true,
+            requestedAction: true,
+            shouldBlock: true,
+            pushSent: true,
+            sentAt: true,
+            ackApplied: true,
+            ackTimestamp: true,
+            ackReason: true,
+          },
+        },
       },
     });
+
+    return sessions.map((session) => this.attachSyncStatus(session));
   }
 
   /**

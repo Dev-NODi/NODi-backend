@@ -1,18 +1,19 @@
+import './config/loadEnv';
+import './types/express';
 import express, { Request, Response } from 'express';
+import compression from 'compression';
 import cors from 'cors';
 import helmet from 'helmet';
-import dotenv from 'dotenv';
 import swaggerUi from 'swagger-ui-express';
 import logger from './config/logger';
-import redis from './config/redis';
+// import redis from './config/redis';
 import prisma from './config/database';
 import { errorHandler } from './middleware/errorHandler';
 import routes from './routes';
 import { swaggerDocument } from './config/swagger';
 import { initializeFirebase } from './config/firebase';
+import HeartbeatService from './services/HeartbeatService';
 
-// Load environment variables
-dotenv.config();
 initializeFirebase();
 
 const app = express();
@@ -20,6 +21,7 @@ const PORT = process.env.PORT || 3000;
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
 app.use(helmet());
+app.use(compression());
 app.use(cors());
 app.use(express.json());
 app.use(express.text({ type: '*/*' }));
@@ -44,8 +46,8 @@ app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerDocument));
 app.get('/health', async (req: Request, res: Response) => {
   try {
     // Check Redis
-    const redisPing = await redis.ping();
-    const redisConnected = redisPing === 'PONG';
+    // const redisPing = await redis.ping();
+    // const redisConnected = redisPing === 'PONG';
 
     // Check PostgreSQL
     await prisma.$queryRaw`SELECT 1`;
@@ -56,7 +58,7 @@ app.get('/health', async (req: Request, res: Response) => {
       timestamp: new Date().toISOString(),
       uptime: process.uptime(),
       environment: process.env.NODE_ENV,
-      redis: redisConnected ? 'connected' : 'disconnected',
+      // redis: redisConnected ? 'connected' : 'disconnected',
       database: databaseConnected ? 'connected' : 'disconnected',
     };
 
@@ -115,6 +117,7 @@ const server = app.listen(PORT, () => {
   logger.info(`📚 API Docs: http://localhost:${PORT}/api-docs`);
   logger.info(`🔗 API Base: http://localhost:${PORT}/api/v1`);
   logger.info('');
+  // HeartbeatService.start();
 });
 
 // ─── Graceful Shutdown ────────────────────────────────────────────────────────
@@ -125,18 +128,19 @@ const gracefulShutdown = async (signal: string) => {
     logger.info('✅ HTTP server closed');
 
     try {
+      HeartbeatService.stop();
       await prisma.$disconnect();
       logger.info('✅ PostgreSQL disconnected');
     } catch (err) {
       logger.error('Error disconnecting PostgreSQL:', err);
     }
 
-    try {
-      await redis.quit();
-      logger.info('✅ Redis disconnected');
-    } catch (err) {
-      logger.error('Error disconnecting Redis:', err);
-    }
+    // try {
+    //   await redis.quit();
+    //   logger.info('✅ Redis disconnected');
+    // } catch (err) {
+    //   logger.error('Error disconnecting Redis:', err);
+    // }
 
     logger.info('✅ Graceful shutdown complete');
     process.exit(0);

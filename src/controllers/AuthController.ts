@@ -100,6 +100,7 @@ export class AuthController {
   static async login(req: Request, res: Response) {
     try {
       const data = AuthLoginSchema.parse(req.body);
+      console.log('Login request data:', data);
       const email = data.email.trim().toLowerCase();
 
       const driverRows = await prisma.$queryRaw<Array<DriverAuthRecord>>`
